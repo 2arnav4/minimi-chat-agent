@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Chat agent</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <aside>
+    <button id="new-chat">New chat</button>
+    <ul id="conversations"></ul>
+    <details id="dev">
+      <summary>Dev clock</summary>
+      <label><input type="checkbox" id="clock-on" /> Pretend it is</label>
+      <input type="datetime-local" id="clock" />
+      <p class="hint">Messages are stored with this time, and "Monday" or "3 November" resolve against it. Use it to build up history, then switch it off and ask about it.</p>
+      <p class="hint" id="tz"></p>
+    </details>
+  </aside>
+  <main>
+    <div id="banner" hidden></div>
+    <section id="messages">
+      <div class="empty" id="empty">
+        <h1>Ask me anything</h1>
+        <p>I search the web when the answer may have changed, and I remember what you asked and when.</p>
+      </div>
+    </section>
+    <form id="composer">
+      <textarea id="input" rows="1" placeholder="Message" autofocus></textarea>
+      <button type="submit" id="send">Send</button>
+    </form>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
