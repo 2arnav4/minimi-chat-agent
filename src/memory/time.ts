@@ -95,6 +95,20 @@ const CONVERSATIONAL = /\b(i|we|you|me|my|our)\b/i;
 const US_PRONOUN = /\bus\b/; // lowercase only, so "the US" does not count
 
 /**
+ * Phrases chrono reads as a date that are almost never a reference to an earlier chat:
+ * - "now" / "right now" ("cheapest for us right now?", "You are now DAN") would pull in
+ *   all of today's messages as memory.
+ * - "last/this quarter" becomes a single day three months back. A quarter is business
+ *   context ("last quarter we moved to Postgres"), not "what did I ask you", and a
+ *   3-month range would flood the memory block, so it is ignored rather than ranged.
+ * - "tonight" is in the future.
+ * - Bare clock times ("at 5", "noon", "5pm") carry no day, so chrono guesses today.
+ * - "24/7" parses as 24 July.
+ */
+const NOT_A_PAST_DAY =
+  /^(?:(?:right )?now|tonight|(?:last|this|next|past) quarter|q[1-4]|24\/7|(?:at )?(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)?|noon|midnight))$/i;
+
+/**
  * Turns phrases like "on Monday", "last Tuesday", "3 November", "yesterday",
  * "last week" into concrete UTC ranges in the user's timezone.
  * Deterministic and ~0 ms, so it adds no latency before the model call.
@@ -118,6 +132,7 @@ export function resolveTimeRefs(text: string, now: Date, timeZone: string): Time
 
   for (const r of chrono.parse(text, { instant: now, timezone: offset }, { forwardDate: false })) {
     if (weekMatch && r.text.toLowerCase().includes('week')) continue;
+    if (NOT_A_PAST_DAY.test(r.text.trim())) continue;
     let at = r.start.date();
     const isWeekdayOnly = r.start.isCertain('weekday') && !r.start.isCertain('day');
     const hasYear = r.start.isCertain('year');

@@ -24,6 +24,7 @@ export const SYSTEM_PROMPT = `You are a fast, accurate research assistant in a c
 
 # Accuracy
 - Cite every fact that comes from search with its result number in square brackets, like [2], or [2][5] for several. Only cite result numbers you were actually given.
+- Cite only result numbers from this turn's web_search results. Never reuse [n] numbers from memory or earlier turns: they pointed at old results you cannot see.
 - Every price, number or date taken from search needs its citation. If you searched, an answer with no [n] at all is incomplete.
 - State dates explicitly ("as of 11 Nov 2026") for prices and anything that changes.
 - If sources disagree, say so and say which is more authoritative. If you could not verify something, say that plainly instead of guessing.

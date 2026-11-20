@@ -1,4 +1,5 @@
 import { resolveTimeRefs, formatStamp, type TimeRange } from './time.js';
+import { stripCitations } from '../agent/untrusted.js';
 import { messagesInRange, searchMessages, neighbour, historyBounds, type StoredMessage } from './store.js';
 
 /**
@@ -56,12 +57,15 @@ function withPairs(hits: StoredMessage[]): StoredMessage[] {
 function render(messages: StoredMessage[], timeZone: string): string {
   return messages
     .map((m) => {
-      const body = m.content.length > MAX_CHARS_PER_MESSAGE ? m.content.slice(0, MAX_CHARS_PER_MESSAGE) + ' [...]' : m.content;
+      // Old [n] markers are stripped: they referred to that turn's search results, not this one's.
+      const text = m.role === 'assistant' ? stripCitations(m.content) : m.content;
+      const body = text.length > MAX_CHARS_PER_MESSAGE ? text.slice(0, MAX_CHARS_PER_MESSAGE) + ' (truncated)' : text;
       const src = m.sources.length ? `\n  Sources used then: ${m.sources.slice(0, 6).map((s) => s.url).join(', ')}` : '';
       // A stopped answer stays visible (it shows what was said, and keeps the question paired
       // with a reply) but is labelled so the model never treats it as a complete answer.
       const who = m.role === 'user' ? 'User' : m.status === 'cancelled' ? 'Assistant (stopped by the user before finishing, incomplete)' : 'Assistant';
-      return `[${formatStamp(m.createdAt, timeZone)}] ${who}: ${body}${src}`;
+      // Parentheses, not square brackets: a bracketed timestamp got copied into answers as if it were a citation.
+      return `(${formatStamp(m.createdAt, timeZone)}) ${who}: ${body}${src}`;
     })
     .join('\n');
 }
