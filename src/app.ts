@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { config, missingKeys, modelChain, specName } from './config.js';
 import type { LanguageModel } from 'ai';
 import { runTurn } from './agent/run.js';
-import { sanitizeTrace } from './agent/errors.js';
+import { logDetail, publicMessage, sanitizeTrace } from './agent/errors.js';
 import { csrfGuard, hostGuard, securityHeaders } from './http/guards.js';
 import { rateLimit, sizeLimit } from './http/limits.js';
 import { addMessage, createConversation, getConversation, getDb, getMessages, listConversations, recentTraces } from './memory/store.js';
@@ -34,11 +34,68 @@ const isValidTz = (tz: string) => {
 
 /** The clock is injectable: a request may say what "now" is (dev clock), only when ALLOW_CLOCK_OVERRIDE=true. */
 function resolveNow(override?: string): Date {
-  if (override && config.allowClockOverride) {
-    const d = new Date(override);
-    if (!Number.isNaN(d.getTime())) return d;
+  return override && config.allowClockOverride ? new Date(override) : new Date();
+}
+
+// ---------- request field rules (shared by chat and import) ----------
+
+/**
+ * Accepted range for a client-supplied time ("now" on chat, "at" on import). Dates far
+ * outside it are not just odd: a stored timestamp past JavaScript's maximum date made
+ * every later recall of that topic throw, and the minimum date crashed the turn.
+ */
+// Fixed bounds rather than "now + 1 year": the Dev clock may legitimately pretend a future date,
+// and the check must not depend on the server clock (tests mock it).
+const EARLIEST_MS = Date.UTC(2000, 0, 1);
+const LATEST_MS = Date.UTC(2100, 0, 1);
+const inTimeRange = (s: string) => {
+  const t = new Date(s).getTime();
+  return Number.isFinite(t) && t >= EARLIEST_MS && t < LATEST_MS;
+};
+const timeField = (name: string) => z.string().max(64).refine(inTimeRange, `${name} must be an ISO date between 2000-01-01 and 2099-12-31`);
+
+/** "" and null both mean "no conversation yet"; anything else must be a plain id (it becomes a primary key). */
+const conversationIdField = z.preprocess(
+  (v) => (v === '' || v === null ? undefined : v),
+  z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{1,100}$/, 'conversationId must be 1-100 letters, digits, "-" or "_"')
+    .optional(),
+);
+
+const timeZoneField = z
+  .string()
+  .max(64, 'timeZone is too long')
+  .refine(isValidTz, 'timeZone must be a valid IANA time zone, e.g. Asia/Kolkata')
+  .nullish()
+  .transform((v) => v ?? undefined);
+
+// Zero-width and other invisible characters do not count as content: a message made only of them is empty.
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF]/g;
+const hasVisibleText = (s: string) => s.replace(INVISIBLE, '').trim().length > 0;
+
+/**
+ * Turns in one conversation run one at a time, in arrival order. Without this, two tabs
+ * (or a double submit) interleave: both questions are stored first, then both answers,
+ * and the question/answer pairing that recall relies on matches the wrong messages.
+ * Trade-off: the lock is in-process, so it does not cover several server instances, and
+ * a second message in the same conversation waits for the first answer to finish.
+ */
+const turnTails = new Map<string, Promise<void>>();
+async function inConversationOrder(id: string | undefined, signal: AbortSignal, run: () => Promise<void>): Promise<void> {
+  if (!id) return run(); // a brand-new conversation cannot collide with anything
+  const prev = turnTails.get(id) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = new Promise<void>((r) => (release = r));
+  const tail = prev.then(() => mine);
+  turnTails.set(id, tail);
+  try {
+    await prev;
+    if (!signal.aborted) await run(); // a request cancelled while waiting never starts its turn
+  } finally {
+    release();
+    if (turnTails.get(id) === tail) turnTails.delete(id); // idle conversations leave no entry behind
   }
-  return new Date();
 }
 
 /** Builds the HTTP app without starting a server, so tests can call routes directly. */
@@ -79,10 +136,12 @@ export function createApp(deps: AppDeps = {}) {
 
   const ChatBody = z.object({
     // The UI sends null for "no conversation yet" (JSON.stringify drops undefined but keeps null).
-    conversationId: z.string().nullish().transform((v) => v ?? undefined),
-    message: z.string().trim().min(1).max(8000),
-    timeZone: z.string().nullish().transform((v) => v ?? undefined),
-    now: z.string().nullish().transform((v) => v ?? undefined),
+    conversationId: conversationIdField,
+    message: z.string().trim().min(1).max(8000).refine(hasVisibleText, 'message is empty'),
+    timeZone: timeZoneField,
+    now: timeField('now')
+      .nullish()
+      .transform((v) => v ?? undefined),
   });
 
   app.post('/api/chat', async (c) => {
@@ -93,21 +152,23 @@ export function createApp(deps: AppDeps = {}) {
     if (missing.length) return c.json({ error: `Missing ${missing.join(', ')} in .env` }, 500);
 
     const { conversationId, message, timeZone, now } = parsed.data;
-    const tz = timeZone && isValidTz(timeZone) ? timeZone : config.defaultTimezone;
+    const tz = timeZone ?? config.defaultTimezone;
     const abort = new AbortController();
     c.req.raw.signal.addEventListener('abort', () => abort.abort());
 
     return streamSSE(c, async (stream) => {
       const queue: Promise<unknown>[] = [];
-      await runTurn({
-        conversationId,
-        text: message,
-        now: resolveNow(now),
-        timeZone: tz,
-        signal: abort.signal,
-        emit: (e) => queue.push(stream.writeSSE({ event: e.type, data: JSON.stringify(e) })),
-        model: deps.model,
-      });
+      const send = (e: { type: string }) => queue.push(stream.writeSSE({ event: e.type, data: JSON.stringify(e) }));
+      try {
+        await inConversationOrder(conversationId, abort.signal, () =>
+          runTurn({ conversationId, text: message, now: resolveNow(now), timeZone: tz, signal: abort.signal, emit: send, model: deps.model }),
+        );
+      } catch (err) {
+        // Anything runTurn did not handle (a database or recall error): the client must get an
+        // error event, never a stream that just ends with no answer. Detail stays in the log.
+        console.warn(`turn crashed: ${logDetail(err)}`);
+        send({ type: 'error', code: 'internal', message: publicMessage('internal') } as { type: string });
+      }
       await Promise.all(queue);
     });
   });
@@ -117,10 +178,16 @@ export function createApp(deps: AppDeps = {}) {
    * test harness (or a user migrating history) seeds "what I asked on Monday".
    */
   const ImportBody = z.object({
-    conversationId: z.string().optional(),
-    title: z.string().optional(),
+    conversationId: conversationIdField,
+    title: z.string().max(200, 'title must be at most 200 characters').optional(),
     messages: z
-      .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().min(1).max(config.limits.importMaxMessageChars), at: z.string() }))
+      .array(
+        z.object({
+          role: z.enum(['user', 'assistant']),
+          content: z.string().min(1).max(config.limits.importMaxMessageChars).refine(hasVisibleText, 'message content is empty'),
+          at: timeField('at'),
+        }),
+      )
       .min(1)
       .max(config.limits.importMaxMessages),
   });

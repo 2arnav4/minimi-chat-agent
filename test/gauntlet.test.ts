@@ -198,7 +198,7 @@ test('security headers are on every response, including 404 and errors', async (
 
 // ---------------- clock gating ----------------
 
-test('clock override: flag off ignores "now" and refuses import; flag on uses a valid "now", ignores an invalid one', async () => {
+test('clock override: flag off ignores "now" and refuses import; flag on uses a valid "now", refuses an invalid one', async () => {
   const app = createApp({ model: textModel() });
   const send = async (now: string) => {
     const res = await post(app, '/api/chat', JSON.stringify({ message: 'hi', now }));
@@ -209,8 +209,8 @@ test('clock override: flag off ignores "now" and refuses import; flag on uses a 
   config.allowClockOverride = true;
   assert.equal(await send('2026-11-03T10:00:00Z'), Date.parse('2026-11-03T10:00:00Z'));
   const before = Date.now();
-  const t = await send('not a date');
-  assert.ok(t >= before && t <= Date.now(), 'an invalid now falls back to the real clock');
+  // An invalid "now" is refused (400) rather than silently replaced by the real clock.
+  assert.equal((await post(app, '/api/chat', JSON.stringify({ message: 'hi', now: 'not a date' }))).status, 400);
   config.allowClockOverride = false;
   const t2 = await send('2026-11-03T10:00:00Z');
   assert.ok(t2 >= before, 'flag off: the requested now is ignored');

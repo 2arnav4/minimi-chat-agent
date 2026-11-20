@@ -228,3 +228,19 @@ test('a stop before any text arrives stores no empty assistant message', async (
   const meta = events.find((e) => e.type === 'meta') as Extract<AgentEvent, { type: 'meta' }>;
   assert.deepEqual(getMessages(meta.conversationId).map((m) => m.role), ['user']);
 });
+
+test('recent history sent to the model has old [n] citations stripped', async () => {
+  const { createConversation, addMessage } = await import('../src/memory/store.js');
+  const conv = createConversation('history', Date.now() - 60_000);
+  addMessage(conv.id, 'user', 'Supabase price?', Date.now() - 60_000);
+  addMessage(conv.id, 'assistant', 'Supabase Pro is $25 [3][5].', Date.now() - 59_000);
+  let seen = '';
+  const spy = new MockLanguageModelV4({
+    doStream: async ({ prompt }: any) => {
+      seen = JSON.stringify(prompt);
+      return { stream: convertArrayToReadableStream([{ type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: 'ok' }, { type: 'text-end', id: 't' }, finish('stop')] as any) };
+    },
+  } as any);
+  await runTurn({ text: 'and Neon?', conversationId: conv.id, now: new Date(), timeZone: 'Asia/Kolkata', emit: () => {}, model: spy });
+  assert.match(seen, /"text":"Supabase Pro is \$25\."/, 'assistant history has its [n] markers removed');
+});

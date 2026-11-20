@@ -6,6 +6,7 @@ import { recall } from '../memory/recall.js';
 import { webSearch, formatForModel } from '../search/webSearch.js';
 import { SYSTEM_PROMPT, buildTurnContent } from './prompt.js';
 import { citedNumbers } from '../../public/cite.js';
+import { stripCitations } from './untrusted.js';
 import { classifyModelError, logDetail, publicMessage, type ErrorCode } from './errors.js';
 
 /** Events streamed to the client (and recorded in the trace). */
@@ -68,7 +69,13 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
 
   // 1. Short-term memory: the recent turns of this conversation, verbatim.
   const recent = getMessages(conv.id, config.recentTurns * 2);
-  const userMsg = addMessage(conv.id, 'user', text, now.getTime());
+  // Messages in one conversation keep their order: if the previous answer was stamped a few
+  // milliseconds after this turn's clock (it is stamped start + elapsed, rounded up), the
+  // question is moved just past it. Larger gaps are deliberate (the Dev clock jumping back)
+  // and left alone.
+  const lastAt = recent.at(-1)?.createdAt ?? -Infinity;
+  const askedAt = lastAt >= now.getTime() && lastAt - now.getTime() < 60_000 ? lastAt + 1 : now.getTime();
+  const userMsg = addMessage(conv.id, 'user', text, askedAt);
 
   // 2. Long-term memory: resolve dates + topic, pull matching past exchanges. Pure SQLite, a few ms.
   const tr = performance.now();
@@ -82,7 +89,11 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
       (m) =>
         ({
           role: m.role,
-          content: m.status === 'cancelled' ? `${m.content}\n\n[This answer was stopped by the user before it finished.]` : m.content,
+          // Old [n] markers point at searches the model can no longer see; strip them so it can't reuse them.
+          content: (() => {
+            const text = m.role === 'assistant' ? stripCitations(m.content) : m.content;
+            return m.status === 'cancelled' ? `${text}\n\n(This answer was stopped by the user before it finished.)` : text;
+          })(),
         }) as ModelMessage,
     ),
     { role: 'user', content: buildTurnContent(text, now, timeZone, mem.block) },
@@ -239,7 +250,7 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
   const status: TurnStatus = cancelled ? 'cancelled' : answer.trim() && !failed ? 'answered' : 'failed';
   // Nothing is stored for a failed turn, or for a stop that came before any text arrived.
   const saved = status !== 'failed' && answer.trim()
-    ? addMessage(conv.id, 'assistant', answer, now.getTime() + Math.max(totalMs, 1), usedSources, cancelled ? 'cancelled' : 'answered')
+    ? addMessage(conv.id, 'assistant', answer, askedAt + Math.max(totalMs, 1), usedSources, cancelled ? 'cancelled' : 'answered')
     : null;
 
   const metrics: TurnMetrics = {
