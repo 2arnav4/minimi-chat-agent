@@ -39,6 +39,14 @@ const isCooling = (name: string) => Date.now() - (failedAt.get(name) ?? 0) < COO
 export const VERIFY_INTENT =
   /\b(still (correct|true|valid|accurate|right|the case|good)|changed|change since|since then|since (monday|tuesday|wednesday|thursday|friday|saturday|sunday|last|yesterday|\d)|any (updates?|news)|up to date|outdated|shipped|launched|released)\b/i;
 
+/**
+ * Questions that are only answerable with live data (current prices, "latest", "right now").
+ * In a live run the model answered "which option is cheapest for us right now?" from its own
+ * knowledge without searching, so the harness forces a search on step one for these too.
+ */
+export const FRESH_INTENT =
+  /\b(right now|currently|latest|cheapest|current (price|pricing|cost|version|plan|rate)s?|how much (is|are|does|do|will)|(price|prices|pricing|cost|costs) (of|for))\b/i;
+
 export interface TurnMetrics {
   model: string;
   ttftMs: number | null; // time to first token of the answer
@@ -102,7 +110,7 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
   // A question that asks whether something from the past still holds must be checked
   // live. Models sometimes "confirm" an old answer from memory alone, so the harness
   // forces at least one search on the first step instead of trusting the model to.
-  const mustVerify = mem.mode !== 'none' && mem.matched > 0 && VERIFY_INTENT.test(text);
+  const mustVerify = (mem.mode !== 'none' && mem.matched > 0 && VERIFY_INTENT.test(text)) || FRESH_INTENT.test(text);
 
   // 3. Agent loop with the single tool.
   const sources: (Source & { n: number })[] = [];

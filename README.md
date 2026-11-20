@@ -42,6 +42,8 @@ You need some history before you can ask about the past. Three ways to get it:
 | `npm run loadtest:server` then `npm run loadtest` | Load test with autocannon against the real app with a fake model and fake search (no API calls) |
 | `npm run eval` | Runs the challenge-style questions against the real APIs on a throwaway DB and prints checks and p50/p95 latency |
 | `npm run seed` | Adds demo history |
+| `npx tsx scripts/audit.ts [db]` | Read-only check of the stored data (index in step with messages, valid sources, no empty answers); exits non-zero on any failure |
+| `BASE=http://127.0.0.1:3456 npx tsx --test scripts/integration.ts` | Black-box tests over real HTTP against a running `loadtest:server` |
 | `npm run typecheck` | TypeScript check |
 
 ## Layout

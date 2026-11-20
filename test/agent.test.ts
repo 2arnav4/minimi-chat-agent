@@ -244,3 +244,13 @@ test('recent history sent to the model has old [n] citations stripped', async ()
   await runTurn({ text: 'and Neon?', conversationId: conv.id, now: new Date(), timeZone: 'Asia/Kolkata', emit: () => {}, model: spy });
   assert.match(seen, /"text":"Supabase Pro is \$25\."/, 'assistant history has its [n] markers removed');
 });
+
+test('fresh-data questions force a search; maths, greetings and memory-only questions do not', async () => {
+  const { FRESH_INTENT } = await import('../src/agent/run.js');
+  for (const q of ['Given all that, which managed Postgres option is cheapest for us right now?', 'What is the latest Node.js LTS?', 'How much is Supabase Pro?', 'current pricing of Neon', 'price of a MacBook Air M3 in India']) {
+    assert.ok(FRESH_INTENT.test(q), q);
+  }
+  for (const q of ['What is 12% of 950?', 'Hi! What can you do?', 'What did I ask you yesterday?', 'Write me a haiku about databases']) {
+    assert.ok(!FRESH_INTENT.test(q), q);
+  }
+});
