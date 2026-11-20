@@ -174,3 +174,40 @@ test('untrusted text cannot close the <result> or <memory> wrapper or break the 
   assert.equal(turn.match(/<\/memory>/g)?.length, 1);
   assert.equal(turn.match(/<\/turn_context>/g)?.length, 1);
 });
+
+test('pruning drops expired cache rows and old traces, and keeps messages by default', async () => {
+  const { cacheSet, cacheGet, saveTrace, recentTraces, getDb } = await import('../src/memory/store.js');
+  const { pruneDb } = await import('../src/memory/prune.js');
+  cacheSet('old', [1], 1000);
+  cacheSet('fresh', [2], 9000);
+  for (let i = 0; i < 5; i++) saveTrace('c', i, { i });
+  const conv = createConversation('t', 0);
+  addMessage(conv.id, 'user', 'ancient postgres question', 0);
+  const r = pruneDb({ now: 10_000, cacheTtlMs: 5000, traceKeep: 2, messageRetentionDays: 0 });
+  assert.deepEqual(r, { cache: 1, traces: 3, messages: 0, conversations: 0 });
+  assert.equal(cacheGet('old', Infinity, 10_000), null);
+  assert.deepEqual(cacheGet('fresh', Infinity, 10_000), [2]);
+  assert.deepEqual(recentTraces(), [{ i: 4 }, { i: 3 }]);
+  assert.equal((getDb().prepare('SELECT COUNT(*) AS n FROM messages').get() as { n: number }).n, 1);
+});
+
+test('message retention deletes old messages, their search index entries and empty conversations', async () => {
+  const { searchMessages, listConversations } = await import('../src/memory/store.js');
+  const { pruneDb } = await import('../src/memory/prune.js');
+  const day = 24 * 60 * 60 * 1000;
+  const now = 100 * day;
+  const old = createConversation('old', now - 40 * day);
+  addMessage(old.id, 'user', 'zebra hosting pricing', now - 40 * day);
+  const recent = createConversation('recent', now - day);
+  addMessage(recent.id, 'user', 'zebra monitor advice', now - day);
+  const r = pruneDb({ now, messageRetentionDays: 30 });
+  assert.equal(r.messages, 1);
+  assert.equal(r.conversations, 1);
+  const hits = searchMessages('zebra');
+  assert.deepEqual(hits.map((h) => h.content), ['zebra monitor advice']);
+  // The FTS index itself must agree with the table (no stale rows left behind).
+  const { getDb } = await import('../src/memory/store.js');
+  const ftsCount = (getDb().prepare("SELECT COUNT(*) AS n FROM messages_fts WHERE messages_fts MATCH 'zebra'").get() as { n: number }).n;
+  assert.equal(ftsCount, 1);
+  assert.deepEqual(listConversations().map((c) => c.title), ['recent']);
+});

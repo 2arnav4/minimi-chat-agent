@@ -1,8 +1,12 @@
 import { serve } from '@hono/node-server';
 import { config, missingKeys, modelChain, specName } from './config.js';
 import { bindHost, createApp } from './app.js';
+import { startPruning } from './memory/prune.js';
 
 const hostname = bindHost();
+// Expired cache rows and old traces are cleared at startup and hourly.
+const stopPruning = startPruning();
+for (const sig of ['SIGINT', 'SIGTERM'] as const) process.once(sig, () => { stopPruning(); process.exit(0); });
 serve({ fetch: createApp({ host: hostname }).fetch, port: config.port, hostname }, (info) => {
   const missing = missingKeys();
   console.log(`\n  Chat agent running at http://localhost:${info.port} (listening on ${hostname})`);

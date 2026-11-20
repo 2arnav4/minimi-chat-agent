@@ -71,6 +71,11 @@ export const config = {
   /** Gemini 3 models think before answering; lower = faster first token. */
   geminiThinking: (env('GEMINI_THINKING') || 'low') as 'low' | 'medium' | 'high',
   searchCacheTtlMs: 10 * 60 * 1000,
+  /** Keep only the newest N traces (debug data). */
+  traceKeep: Number(env('TRACE_KEEP') || 1000),
+  /** Delete messages older than this many days. 0 = keep everything (messages are the memory). */
+  messageRetentionDays: Number(env('MESSAGE_RETENTION_DAYS') || 0),
+  pruneIntervalMs: 60 * 60 * 1000,
 };
 
 export function missingKeys(): string[] {
