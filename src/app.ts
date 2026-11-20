@@ -8,6 +8,7 @@ import type { LanguageModel } from 'ai';
 import { runTurn } from './agent/run.js';
 import { sanitizeTrace } from './agent/errors.js';
 import { csrfGuard, hostGuard, securityHeaders } from './http/guards.js';
+import { rateLimit, sizeLimit } from './http/limits.js';
 import { addMessage, createConversation, getConversation, getDb, getMessages, listConversations, recentTraces } from './memory/store.js';
 
 const require = createRequire(import.meta.url);
@@ -49,6 +50,10 @@ export function createApp(deps: AppDeps = {}) {
   app.use('*', hostGuard(deps.host ?? bindHost()));
   app.use('*', securityHeaders);
   app.use('/api/*', csrfGuard);
+  // Limits read config when the app is built, so the load-test server can lift them first.
+  const { limits } = config;
+  app.use('/api/chat', rateLimit(limits.chatPerMinute), sizeLimit(limits.chatBodyBytes));
+  app.use('/api/import', rateLimit(limits.importPerMinute), sizeLimit(limits.importBodyBytes));
 
   // ---------- UI ----------
   const page = (file: string, type: string) => (c: any) => c.body(readFileSync(new URL(`../public/${file}`, import.meta.url)), 200, { 'content-type': type });
@@ -113,7 +118,10 @@ export function createApp(deps: AppDeps = {}) {
   const ImportBody = z.object({
     conversationId: z.string().optional(),
     title: z.string().optional(),
-    messages: z.array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().min(1), at: z.string() })).min(1),
+    messages: z
+      .array(z.object({ role: z.enum(['user', 'assistant']), content: z.string().min(1).max(config.limits.importMaxMessageChars), at: z.string() }))
+      .min(1)
+      .max(config.limits.importMaxMessages),
   });
 
   app.post('/api/import', async (c) => {

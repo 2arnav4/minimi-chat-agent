@@ -28,6 +28,9 @@ const model = new MockLanguageModelV4({
 } as any);
 
 config.tavilyKey = 'fake';
+// Every load-test request comes from one local client; the per-client rate limit would turn the test into a 429 test.
+config.limits.chatPerMinute = 0;
+config.limits.importPerMinute = 0;
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: any, init?: any) => {
   if (String(url).includes('api.tavily.com')) {

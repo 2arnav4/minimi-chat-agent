@@ -81,6 +81,15 @@ export const config = {
   /** Delete messages older than this many days. 0 = keep everything (messages are the memory). */
   messageRetentionDays: Number(env('MESSAGE_RETENTION_DAYS') || 0),
   pruneIntervalMs: 60 * 60 * 1000,
+  /** Request limits (finding 6). A rate of 0 turns that limit off. */
+  limits: {
+    chatBodyBytes: Number(env('CHAT_MAX_BODY_BYTES') || 64 * 1024),
+    importBodyBytes: Number(env('IMPORT_MAX_BODY_BYTES') || 2 * 1024 * 1024),
+    importMaxMessages: Number(env('IMPORT_MAX_MESSAGES') || 500),
+    importMaxMessageChars: Number(env('IMPORT_MAX_MESSAGE_CHARS') || 20000),
+    chatPerMinute: Number(env('RATE_LIMIT_CHAT_PER_MIN') || 30),
+    importPerMinute: Number(env('RATE_LIMIT_IMPORT_PER_MIN') || 10),
+  },
 };
 
 export function missingKeys(): string[] {

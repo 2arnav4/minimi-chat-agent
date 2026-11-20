@@ -286,3 +286,46 @@ test('search provider response body is not forwarded to the model or the client'
   assert.equal(events.find((e) => e.type === 'search_end').error, 'search provider returned 401');
   assert.doesNotMatch(JSON.stringify(events), /tvly-|account x/);
 });
+
+// ---------- request limits (size, import caps, rate) ----------
+
+const json = { 'content-type': 'application/json' };
+
+test('oversized bodies are refused with 413 before parsing', async () => {
+  const app = createApp({ model: model(text('x')) });
+  const bigChat = JSON.stringify({ message: 'a'.repeat(config.limits.chatBodyBytes + 10) });
+  assert.equal((await post(app, '/api/chat', json, bigChat)).status, 413);
+  const bigImport = JSON.stringify({ messages: [{ role: 'user', content: 'a'.repeat(config.limits.importBodyBytes + 10), at: '2026-11-03T10:00:00Z' }] });
+  assert.equal((await post(app, '/api/import', json, bigImport)).status, 413);
+});
+
+test('import caps the number of messages and the length of each one', async () => {
+  const app = createApp({ model: model(text('x')) });
+  const msg = (content: string) => ({ role: 'user', content, at: '2026-11-03T10:00:00Z' });
+  const tooMany = JSON.stringify({ messages: Array.from({ length: config.limits.importMaxMessages + 1 }, () => msg('hi')) });
+  assert.equal((await post(app, '/api/import', json, tooMany)).status, 400);
+  const tooLong = JSON.stringify({ messages: [msg('a'.repeat(config.limits.importMaxMessageChars + 1))] });
+  assert.equal((await post(app, '/api/import', json, tooLong)).status, 400);
+  const ok = JSON.stringify({ messages: [msg('fine')] });
+  assert.equal((await post(app, '/api/import', json, ok)).status, 200);
+});
+
+test('rate limit returns 429 with Retry-After, and 0 turns it off', async () => {
+  const saved = config.limits.importPerMinute;
+  try {
+    config.limits.importPerMinute = 2;
+    const app = createApp({ model: model(text('x')) });
+    const body = JSON.stringify({ messages: [{ role: 'user', content: 'hi', at: '2026-11-03T10:00:00Z' }] });
+    assert.equal((await post(app, '/api/import', json, body)).status, 200);
+    assert.equal((await post(app, '/api/import', json, body)).status, 200);
+    const limited = await post(app, '/api/import', json, body);
+    assert.equal(limited.status, 429);
+    assert.ok(Number(limited.headers.get('retry-after')) >= 1);
+
+    config.limits.importPerMinute = 0;
+    const open = createApp({ model: model(text('x')) });
+    for (let i = 0; i < 5; i++) assert.equal((await post(open, '/api/import', json, body)).status, 200);
+  } finally {
+    config.limits.importPerMinute = saved;
+  }
+});
