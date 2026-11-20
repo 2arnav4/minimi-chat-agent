@@ -8,7 +8,9 @@ export type Provider = 'openai' | 'google';
 /** First entry is the main model, the rest are fallbacks tried in order if it fails. */
 const DEFAULT_MODELS: Record<Provider, string[]> = {
   openai: ['gpt-5-mini'],
-  google: ['gemini-3.8-flash', 'gemini-3.5-flash', 'gemini-flash-lite-latest'],
+  // flash-lite first: in the live run it answered at a 4.7 s median first token and passed 19/22 turns,
+  // while 3.8-flash repeatedly went silent (watchdog fallbacks) and 3.5-flash hit free-tier quota.
+  google: ['gemini-flash-lite-latest', 'gemini-3.5-flash', 'gemini-3.8-flash'],
 };
 
 const KEY_ENV: Record<Provider, string> = {
@@ -71,7 +73,8 @@ export const config = {
   recentTurns: 12,
   searchTimeoutMs: 8000,
   /** Give up on a model (and fall back) if it sends nothing for this long. */
-  modelFirstChunkMs: 20000,
+  // 12 s: healthy first chunks arrived in under 10 s live; a silent model cost 20 s per fallback before.
+  modelFirstChunkMs: 12000,
   modelChunkMs: 30000,
   /** Gemini 3 models think before answering; lower = faster first token. */
   geminiThinking: (env('GEMINI_THINKING') || 'low') as 'low' | 'medium' | 'high',

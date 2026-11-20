@@ -41,4 +41,5 @@ globalThis.fetch = (async (url: any, init?: any) => {
 }) as typeof fetch;
 
 resetDb(process.env.DB_PATH || '/tmp/load.db');
-serve({ fetch: createApp({ model }).fetch, port: Number(process.env.PORT || 3456) }, (i) => console.log(`load-test server on ${i.port}`));
+// Loopback only, like the real server: the Host check assumes nobody else can reach the socket.
+serve({ fetch: createApp({ model }).fetch, port: Number(process.env.PORT || 3456), hostname: '127.0.0.1' }, (i) => console.log(`load-test server on 127.0.0.1:${i.port}`));
