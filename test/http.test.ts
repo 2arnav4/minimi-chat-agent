@@ -251,3 +251,38 @@ test('pages and API responses carry CSP and nosniff', async () => {
     assert.equal(res.headers.get('x-content-type-options'), 'nosniff', path);
   }
 });
+
+test('provider error text never reaches the client: generic message plus code, no key', async () => {
+  const leaky = () =>
+    new MockLanguageModelV4({
+      doStream: async () => {
+        throw new Error('429 quota exceeded for https://generativelanguage.googleapis.com/v1/models?key=AIzaSyA1234567890abcdefghijklmnop');
+      },
+    });
+  const app = createApp({ model: [leaky(), leaky()] });
+  const warn = mock.method(console, 'warn', () => {});
+  const { events } = await chat(app, { message: 'hi' });
+  warn.mock.restore();
+  assert.doesNotMatch(JSON.stringify(events), /AIza|key=|googleapis/);
+  assert.equal(events.find((e) => e.type === 'fallback').reason, 'quota');
+  const err = events.find((e) => e.type === 'error');
+  assert.equal(err.code, 'quota');
+  assert.match(err.message, /quota/i);
+  // The server log keeps the detail, with the key redacted.
+  const logged = warn.mock.calls.map((c) => String(c.arguments[0])).join('\n');
+  assert.match(logged, /googleapis/);
+  assert.doesNotMatch(logged, /AIza/);
+  const traces = await (await app.request('/api/traces')).json();
+  assert.doesNotMatch(JSON.stringify(traces), /AIza|googleapis/);
+});
+
+test('search provider response body is not forwarded to the model or the client', async () => {
+  config.tavilyKey = 'test';
+  fetchMock = mock.method(globalThis, 'fetch', async () => new Response('bad key tvly-SECRETSECRET123 for account x', { status: 401 }));
+  const warn = mock.method(console, 'warn', () => {});
+  const app = createApp({ model: model(search('anything'), text('I could not verify this right now.')) });
+  const { events } = await chat(app, { message: 'latest news on X' });
+  warn.mock.restore();
+  assert.equal(events.find((e) => e.type === 'search_end').error, 'search provider returned 401');
+  assert.doesNotMatch(JSON.stringify(events), /tvly-|account x/);
+});

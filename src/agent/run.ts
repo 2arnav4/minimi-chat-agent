@@ -6,16 +6,18 @@ import { recall } from '../memory/recall.js';
 import { webSearch, formatForModel } from '../search/webSearch.js';
 import { SYSTEM_PROMPT, buildTurnContent } from './prompt.js';
 import { citedNumbers } from '../../public/cite.js';
+import { classifyModelError, logDetail, publicMessage, type ErrorCode } from './errors.js';
 
 /** Events streamed to the client (and recorded in the trace). */
 export type AgentEvent =
   | { type: 'meta'; conversationId: string; recall: { mode: string; matched: number; dates: string[] } }
   | { type: 'search_start'; id: string; query: string }
   | { type: 'search_end'; id: string; query: string; results: number; ms: number; cached: boolean; error?: string }
-  | { type: 'fallback'; from: string; to: string; reason: string }
+  | { type: 'fallback'; from: string; to: string; reason: ErrorCode }
   | { type: 'text'; delta: string }
   | { type: 'done'; messageId: number | null; sources: (Source & { n: number })[]; metrics: TurnMetrics }
-  | { type: 'error'; message: string };
+  // message is a generic sentence safe to show; provider detail stays in the server log.
+  | { type: 'error'; code: ErrorCode; message: string };
 
 /**
  * Circuit breaker: a model that just failed is skipped for a while, so every
@@ -155,7 +157,7 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
         maxRetries: i < chain.length - 1 ? 0 : 2,
         abortSignal: attemptSignal,
         // Errors are handled below (fallback or error event); log one line, not a stack trace.
-        onError: ({ error }) => console.warn(`[${chain[i].name}] ${(error instanceof Error ? error.message : String(error)).slice(0, 140)}`),
+        onError: ({ error }) => console.warn(`[${chain[i].name}] ${logDetail(error, 200)}`),
       });
 
       for await (const part of result.fullStream) {
@@ -186,15 +188,16 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
       break;
     } catch (err) {
       clearTimeout(watchdog);
-      const message = err instanceof Error ? err.message : String(err);
+      const code = classifyModelError(err);
       const canFallBack = !answer && i < chain.length - 1 && !signal?.aborted;
       if (!signal?.aborted) failedAt.set(chain[i].name, Date.now());
       if (canFallBack) {
-        fallbacks.push(`${chain[i].name}: ${message.slice(0, 160)}`);
-        emit({ type: 'fallback', from: chain[i].name, to: chain[i + 1].name, reason: message.slice(0, 160) });
+        fallbacks.push(`${chain[i].name}: ${code}`);
+        emit({ type: 'fallback', from: chain[i].name, to: chain[i + 1].name, reason: code });
         continue;
       }
-      emit({ type: 'error', message });
+      console.warn(`[${chain[i].name}] turn failed (${code}): ${logDetail(err)}`);
+      emit({ type: 'error', code, message: publicMessage(code) });
       break;
     }
   }

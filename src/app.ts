@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { config, missingKeys, modelChain, specName } from './config.js';
 import type { LanguageModel } from 'ai';
 import { runTurn } from './agent/run.js';
+import { sanitizeTrace } from './agent/errors.js';
 import { csrfGuard, hostGuard, securityHeaders } from './http/guards.js';
 import { addMessage, createConversation, getConversation, getDb, getMessages, listConversations, recentTraces } from './memory/store.js';
 
@@ -69,7 +70,7 @@ export function createApp(deps: AppDeps = {}) {
     return c.json(getMessages(c.req.param('id')));
   });
 
-  app.get('/api/traces', (c) => c.json(recentTraces()));
+  app.get('/api/traces', (c) => c.json(recentTraces().map(sanitizeTrace)));
 
   const ChatBody = z.object({
     conversationId: z.string().optional(),

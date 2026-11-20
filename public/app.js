@@ -201,7 +201,7 @@ async function send(text) {
           }
         } else if (e.type === 'fallback') {
           const row = document.createElement('div');
-          row.textContent = `${e.from} is unavailable, switching to ${e.to}`;
+          row.textContent = `${e.from} is unavailable (${String(e.reason).replace(/_/g, ' ')}), switching to ${e.to}`;
           activity.appendChild(row);
         } else if (e.type === 'text') {
           answer += e.delta ?? '';

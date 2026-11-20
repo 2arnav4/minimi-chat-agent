@@ -123,3 +123,21 @@ test('falls back when a model hangs without sending anything', async () => {
   const done = events.find((e) => e.type === 'done') as Extract<AgentEvent, { type: 'done' }>;
   assert.equal(done.metrics.model, 'injected-1');
 });
+
+test('redactSecrets, classifyModelError and sanitizeTrace', async () => {
+  const { redactSecrets, classifyModelError, sanitizeTrace } = await import('../src/agent/errors.js');
+  const raw = 'url ?key=abc123&x=1 AIzaSyA1234567890abcdefghijklmnop sk-proj-abcdefghijklmnop1234 tvly-dev-12345678 Authorization: Bearer abc.def.ghi123';
+  const red = redactSecrets(raw);
+  for (const leak of ['abc123', 'AIza', 'sk-proj', 'tvly-', 'abc.def']) assert.ok(!red.includes(leak), `${leak} leaked: ${red}`);
+  assert.match(red, /key=\[redacted\]/);
+  assert.equal(classifyModelError(Object.assign(new Error('x'), { statusCode: 429 })), 'quota');
+  assert.equal(classifyModelError(new Error('RESOURCE_EXHAUSTED')), 'quota');
+  assert.equal(classifyModelError(Object.assign(new Error('x'), { statusCode: 503 })), 'model_unavailable');
+  assert.equal(classifyModelError(new Error('This model is currently experiencing high demand')), 'model_unavailable');
+  assert.equal(classifyModelError(new Error('API key not valid')), 'auth');
+  assert.equal(classifyModelError(new Error('no response from model for 20s')), 'timeout');
+  assert.equal(classifyModelError(new Error('model returned an empty answer')), 'empty_answer');
+  assert.equal(classifyModelError(new Error('weird')), 'internal');
+  const old = { metrics: { fallbacks: ['google:a: 429 quota ?key=AIzaSyA1234567890abcdefghijklmnop', 'google:b: quota'] } };
+  assert.deepEqual(sanitizeTrace(old).metrics.fallbacks, ['google:a: quota', 'google:b: quota']);
+});

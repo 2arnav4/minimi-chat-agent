@@ -1,3 +1,4 @@
+import { logDetail } from '../agent/errors.js';
 import { config } from '../config.js';
 import { cacheGet, cacheSet } from '../memory/store.js';
 import { escapeAttr, neutralizeTags } from '../agent/untrusted.js';
@@ -59,7 +60,11 @@ export async function webSearch(args: SearchArgs): Promise<SearchOutput> {
       }),
       signal: AbortSignal.timeout(config.searchTimeoutMs),
     });
-    if (!res.ok) throw new Error(`search provider returned ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    if (!res.ok) {
+      // The body can echo request details; keep it in the server log only.
+      console.warn(`[search] HTTP ${res.status}: ${logDetail(await res.text().catch(() => ''), 200)}`);
+      throw new Error(`search provider returned ${res.status}`);
+    }
     const data = (await res.json()) as { results?: { title: string; url: string; content: string; published_date?: string }[] };
     const results: SearchResult[] = (data.results ?? []).map((r) => ({
       title: r.title,
@@ -70,7 +75,11 @@ export async function webSearch(args: SearchArgs): Promise<SearchOutput> {
     cacheSet(key, results, Date.now());
     return { query: args.query, results, cached: false, ms: Math.round(performance.now() - t0) };
   } catch (err) {
-    const msg = err instanceof Error ? (err.name === 'TimeoutError' ? `search timed out after ${config.searchTimeoutMs} ms` : err.message) : String(err);
+    const timedOut = err instanceof Error && err.name === 'TimeoutError';
+    const known = err instanceof Error && /^search provider returned \d{3}$/.test(err.message);
+    if (!timedOut && !known) console.warn(`[search] ${logDetail(err, 200)}`);
+    // Only fixed, known-safe strings leave this function (they reach the model and the UI).
+    const msg = timedOut ? `search timed out after ${config.searchTimeoutMs} ms` : known ? (err as Error).message : 'search request failed';
     return { query: args.query, results: [], cached: false, ms: Math.round(performance.now() - t0), error: msg };
   }
 }
