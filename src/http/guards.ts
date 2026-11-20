@@ -6,7 +6,7 @@ import type { MiddlewareHandler } from 'hono';
  * These guards keep everyone else out:
  *  - hostGuard: blocks DNS rebinding (an evil page whose domain now points at 127.0.0.1)
  *  - csrfGuard: blocks other sites from POSTing into the API through the user's browser
- *  - securityHeaders: CSP + nosniff so injected markup cannot run script
+ *  - securityHeaders: CSP + nosniff so injected markup cannot run script; no-store on API data
  */
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
@@ -51,13 +51,15 @@ export const csrfGuard: MiddlewareHandler = async (c, next) => {
   if (c.req.header('sec-fetch-site') === 'cross-site') return c.json({ error: 'cross-site request blocked' }, 403);
   const origin = c.req.header('origin');
   if (origin) {
-    let originHost = '';
+    let originValue = '';
     try {
-      originHost = new URL(origin).host.toLowerCase();
+      originValue = new URL(origin).origin.toLowerCase();
     } catch {
       // "null" (sandboxed iframe, file://) or garbage: treat as foreign.
     }
-    if (originHost !== requestHost(c.req.url, c.req.header('host'))) return c.json({ error: 'cross-origin request blocked' }, 403);
+    // Scheme and host must both match: an https page is a different origin from this http server.
+    const ownOrigin = `${new URL(c.req.url).protocol}//${requestHost(c.req.url, c.req.header('host'))}`;
+    if (originValue !== ownOrigin) return c.json({ error: 'cross-origin request blocked' }, 403);
   }
   await next();
 };
@@ -67,7 +69,8 @@ export const CSP = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self'",
-  "img-src 'self' data: https:",
+  // No remote images: the UI shows none, and a model-written <img> would beacon data out.
+  "img-src 'self' data:",
   "connect-src 'self'",
   "frame-ancestors 'none'",
   "base-uri 'none'",
@@ -79,4 +82,6 @@ export const securityHeaders: MiddlewareHandler = async (c, next) => {
   await next();
   c.header('Content-Security-Policy', CSP);
   c.header('X-Content-Type-Options', 'nosniff');
+  // API responses hold conversation data: never store them in a browser or proxy cache.
+  if (c.req.path.startsWith('/api/')) c.header('Cache-Control', 'no-store');
 };

@@ -1,36 +1,10 @@
 import { marked } from '/vendor/marked.js';
-import { linkCitations } from '/cite.js';
+import { linkCitations, answerRenderer, citationHtml, safeHref as safeHrefAt, esc, waitingLabel } from '/cite.js';
 
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-// Never render raw HTML coming from the model (it may echo web content).
-// Links may only point at http(s) or mailto: a "javascript:" link in a model
-// answer (echoed from a web page) would run script on click. Anything else is
-// shown as its plain link text.
-const SAFE_LINK = /^(https?:|mailto:)/i;
-const safeHref = (href) => {
-  try {
-    const u = new URL(href, location.href);
-    return SAFE_LINK.test(u.protocol) ? u.href : null;
-  } catch {
-    return null;
-  }
-};
-marked.use({
-  renderer: {
-    html: (t) => esc(t.text ?? t.raw ?? ''),
-    link({ href, title, tokens }) {
-      const label = this.parser.parseInline(tokens);
-      const url = safeHref(href);
-      if (!url) return label;
-      return `<a href="${esc(url)}"${title ? ` title="${esc(title)}"` : ''} target="_blank" rel="noopener noreferrer">${label}</a>`;
-    },
-    image({ href, title, text }) {
-      const url = safeHref(href);
-      if (!url || !/^https?:/i.test(url)) return esc(text);
-      return `<img src="${esc(url)}" alt="${esc(text)}"${title ? ` title="${esc(title)}"` : ''} />`;
-    },
-  },
-});
+// Rendering rules live in cite.js so the tests exercise the same code: raw HTML shown as
+// text, only http(s)/mailto links, and remote images turned into links (never fetched).
+marked.use({ renderer: answerRenderer(location.href) });
+const safeHref = (href) => safeHrefAt(href, location.href);
 
 const $ = (id) => document.getElementById(id);
 const els = { list: $('conversations'), msgs: $('messages'), empty: $('empty'), form: $('composer'), input: $('input'), send: $('send'), banner: $('banner'), clockOn: $('clock-on'), clock: $('clock') };
@@ -77,18 +51,11 @@ $('clock-off').onclick = () => {
 };
 
 // ---- rendering ----
-function renderAnswer(text, sources = []) {
-  const byN = new Map(sources.map((s) => [s.n, s]));
-  let html = marked.parse(text || '');
-  if (byN.size) {
-    // Only in text, never inside tags, links or code (see cite.js).
-    html = linkCitations(html, (n) => {
-      const s = byN.get(n);
-      const href = s && safeHref(s.url);
-      return href ? `<a class="cite" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(s.title ?? '')}">[${n}]</a>` : null;
-    });
-  }
-  return html;
+// sources: null while streaming (not known yet), otherwise the answer's sources.
+function renderAnswer(text, sources = null) {
+  const html = marked.parse(text || '');
+  // Only in text, never inside tags, links or code (see cite.js).
+  return linkCitations(html, (n) => citationHtml(n, sources, location.href));
 }
 
 const markStopped = (div) => {
@@ -106,8 +73,8 @@ function addMessage(role, text, at, sources = [], status = 'answered') {
   div.innerHTML = `<div class="stamp">${at ? esc(fmt(at)) : ''}</div><div class="activity"></div><div class="body"></div><div class="sources"></div><div class="metrics"></div>`;
   const body = div.querySelector('.body');
   if (role === 'user') body.textContent = text;
-  else body.innerHTML = renderAnswer(text, sources.map((s, i) => ({ n: s.n ?? i + 1, ...s })));
-  if (role === 'assistant' && sources.length) renderSources(div, sources.map((s, i) => ({ n: s.n ?? i + 1, ...s })));
+  else if (text) body.innerHTML = renderAnswer(text, (sources ?? []).map((s, i) => ({ n: s.n ?? i + 1, ...s })));
+  if (role === 'assistant' && sources?.length) renderSources(div, sources.map((s, i) => ({ n: s.n ?? i + 1, ...s })));
   if (role === 'assistant' && status === 'cancelled') markStopped(div);
   els.msgs.appendChild(div);
   els.msgs.scrollTop = els.msgs.scrollHeight;
@@ -128,7 +95,10 @@ async function loadConversations() {
   els.list.innerHTML = list
     .map((c) => `<li data-id="${esc(c.id)}" class="${c.id === conversationId ? 'active' : ''}">${esc(c.title)}<small>${esc(fmt(c.updatedAt))}</small></li>`)
     .join('');
-  els.list.querySelectorAll('li').forEach((li) => (li.onclick = () => openConversation(li.dataset.id)));
+  els.list.querySelectorAll('li').forEach((li) => (li.onclick = () => {
+    closeSidebar();
+    openConversation(li.dataset.id);
+  }));
 }
 
 async function openConversation(id) {
@@ -143,6 +113,7 @@ async function openConversation(id) {
 }
 
 $('new-chat').onclick = () => {
+  closeSidebar();
   conversationId = null;
   els.msgs.querySelectorAll('.msg').forEach((m) => m.remove());
   els.empty.hidden = false;
@@ -164,6 +135,18 @@ async function send(text) {
   const searchRows = new Map();
   let answer = '';
   let frame = 0;
+  // Waiting line: shown while the turn has made no visible progress for a while
+  // (silent model, slow fallback), cleared by the next event or when the turn ends.
+  let lastEvent = Date.now();
+  const waiting = document.createElement('div');
+  waiting.className = 'waiting';
+  const clearWaiting = () => waiting.remove();
+  const waitTimer = setInterval(() => {
+    const label = answer ? null : waitingLabel(Date.now() - lastEvent);
+    if (!label) return clearWaiting();
+    waiting.textContent = label;
+    if (!waiting.isConnected) activity.appendChild(waiting);
+  }, 500);
 
   try {
     const res = await fetch('/api/chat', {
@@ -193,6 +176,8 @@ async function send(text) {
           continue; // skip a malformed event instead of aborting the whole answer
         }
         if (!e || typeof e !== 'object') continue;
+        lastEvent = Date.now();
+        clearWaiting();
         if (e.type === 'meta') {
           conversationId = e.conversationId;
           if (e.recall && e.recall.mode !== 'none') {
@@ -252,6 +237,8 @@ async function send(text) {
       body.innerHTML = `<p class="error">${esc(err.message)}</p>`;
     }
   } finally {
+    clearInterval(waitTimer);
+    clearWaiting();
     busy = false;
     inflight = null;
     els.send.textContent = 'Send';
@@ -283,6 +270,28 @@ els.input.oninput = () => {
   els.input.style.height = 'auto';
   els.input.style.height = `${els.input.scrollHeight}px`;
 };
+
+// ---- sidebar on narrow screens: closed -> open (overlay) -> closed ----
+// At <=720px the sidebar is an off-canvas panel opened by the Menu button.
+const sidebar = $('sidebar');
+const menuBtn = $('menu-toggle');
+const backdrop = $('backdrop');
+function setSidebar(open) {
+  sidebar.classList.toggle('open', open);
+  backdrop.hidden = !open;
+  menuBtn.setAttribute('aria-expanded', String(open));
+  if (open) $('new-chat').focus();
+}
+function closeSidebar() {
+  if (!sidebar.classList.contains('open')) return;
+  setSidebar(false);
+  menuBtn.focus();
+}
+menuBtn.onclick = () => setSidebar(!sidebar.classList.contains('open'));
+backdrop.onclick = closeSidebar;
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') closeSidebar();
+});
 
 // ---- setup banner: checking -> ok (hidden) | missing keys | server unreachable ----
 // Re-checked on "Check again" and whenever the tab regains focus, so it clears

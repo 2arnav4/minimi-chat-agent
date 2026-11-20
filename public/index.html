@@ -4,10 +4,11 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Chat agent</title>
+    <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <aside>
+  <aside id="sidebar">
     <button id="new-chat">New chat</button>
     <ul id="conversations"></ul>
     <details id="dev">
@@ -18,7 +19,9 @@
       <p class="hint" id="tz"></p>
     </details>
   </aside>
+  <div id="backdrop" hidden></div>
   <main>
+    <button type="button" id="menu-toggle" aria-controls="sidebar" aria-expanded="false">Menu</button>
     <div id="banner" hidden></div>
     <div id="clock-banner" hidden><span id="clock-banner-text"></span> <button type="button" id="clock-off">Turn off</button></div>
     <section id="messages">

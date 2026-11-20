@@ -343,10 +343,9 @@ for (const seed of [7, 99, 2026]) {
       }
       const md = pieces.join(' ');
       // Server side: plain-text citations are always found; code and link URLs never count.
-      // ([n] inside a link label is still counted by citedNumbers; see the todo test below.)
       const got = citedNumbers(md);
       for (const n of expected) assert.ok(got.has(n), `seed ${seed} case ${i}: missed [${n}] in ${JSON.stringify(md)}`);
-      for (const n of got) assert.ok(expected.has(n) || inLabels.has(n), `seed ${seed} case ${i}: counted [${n}] from code or a URL in ${JSON.stringify(md)}`);
+      for (const n of got) assert.ok(expected.has(n), `seed ${seed} case ${i}: counted [${n}] from code, a URL or a link label in ${JSON.stringify(md)}`);
       const html = marked.parse(md, { async: false }) as string;
       let linked = 0;
       const out = linkCitations(html, (n) => {
@@ -360,7 +359,7 @@ for (const seed of [7, 99, 2026]) {
   });
 }
 
-test('citedNumbers ignores [n] inside a link label, like the UI does', { todo: 'gauntlet finding: server counts [n] in a link label as cited, UI does not link it' }, () => {
+test('citedNumbers ignores [n] inside a link label, like the UI does', () => {
   assert.deepEqual([...citedNumbers('[label [8]](https://example.com/b) and a real one [2]')], [2]);
 });
 

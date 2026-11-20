@@ -47,7 +47,17 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #input { flex: 1; resize: none; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font: inherit; background: var(--panel); color: var(--text); max-height: 200px; }
 #send { padding: 0 18px; border: 0; border-radius: 10px; background: var(--accent); color: var(--bg); font: inherit; cursor: pointer; }
 #send:disabled { opacity: 0.5; cursor: default; }
-@media (max-width: 720px) { aside { display: none; } }
+#menu-toggle, #backdrop { display: none; }
+@media (max-width: 720px) {
+  /* Off-canvas sidebar: hidden until the Menu button opens it as an overlay. */
+  aside { position: fixed; top: 0; bottom: 0; left: 0; z-index: 20; width: min(85vw, 300px); transform: translateX(-100%); transition: transform 0.15s ease; visibility: hidden; }
+  aside.open { transform: none; visibility: visible; }
+  #backdrop:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 10; background: rgba(0, 0, 0, 0.35); }
+  #menu-toggle { display: block; align-self: flex-start; margin: 10px 16px 0; padding: 6px 12px; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 8px; font: inherit; cursor: pointer; }
+}
 #banner .banner-retry { margin-left: 8px; font-size: 13px; padding: 2px 8px; cursor: pointer; }
 #send.stop { background: var(--muted); }
 .msg .stopped { font-size: 12px; color: var(--muted); margin-top: 4px; font-style: italic; }
+.cite-missing { font-size: 11px; vertical-align: super; color: var(--muted); opacity: 0.6; padding: 0 2px; cursor: help; }
+.activity .waiting { font-style: italic; }
+.image-link::before { content: "image: "; }
