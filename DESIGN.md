@@ -4,47 +4,44 @@
 
 ```
 browser ──POST /api/chat (SSE)──> server
-                                   1. save user message with timestamp (SQLite)
-                                   2. recall: resolve dates in the message -> pull those days -> rank by topic (FTS5/BM25)
-                                   3. model call: static system prompt + last 12 turns + <turn_context> (now, timezone, recalled memory)
-                                   4. agent loop (max 6 steps): model may call web_search, several in parallel
-                                   5. stream tokens to the browser, save answer + the sources it cited, save a trace
+   1. save user message with timestamp (SQLite)
+   2. recall: resolve dates in the message -> pull those days -> rank by topic (FTS5/BM25)
+   3. model call: static system prompt + last 12 turns + <turn_context> (now, timezone, memory)
+   4. agent loop (max 6 steps): model may call web_search, several in parallel
+   5. stream tokens; save the answer + only the sources it cited; save a trace
 ```
 
-- **One tool, `web_search`** (Tavily). Results come back as cleaned page text, trimmed to 5 results x 900 chars, wrapped in `<result id=n>` tags and labelled untrusted. The model cites `[n]`. The answer is stored with only the sources it actually cited.
-- **Memory is part of the harness, not a tool.** The rules allow one tool. Doing recall before the model call also saves a full model round trip (no "decide to look it up, then look it up").
-- **Every message has a UTC timestamp.** "Monday", "3 November", "yesterday", "last week" are turned into day ranges **in the user's timezone** (sent by the browser) with chrono-node plus my own rules:
-  - a weekday that would fall in the future means the previous one
-  - a bare date that would fall in the future means last year
-  - "last Tuesday" is ambiguous in English (yesterday's Tuesday or the week before), so both days are checked and the one whose messages match the topic wins. The model is told which day was picked.
-- **Clock is injectable.** `/api/chat` accepts `now`, and `/api/import` accepts past messages with timestamps. That is how the dev clock in the UI, the tests and the eval build up "what I asked on Monday". It can be switched off with `ALLOW_CLOCK_OVERRIDE=false`.
+- **One tool, `web_search`** (Tavily): 5 results x 900 chars, wrapped in `<result id=n>` tags as untrusted data. The model cites `[n]`.
+- **Memory is part of the harness, not a tool.** That keeps the one-tool rule and saves a model round trip ("decide to look it up, then look it up").
+- **Every message has a UTC timestamp.** "Monday", "3 November", "last week" become day ranges in the user's timezone (chrono-node plus rules: a weekday or bare date in the future means the previous one). "Last Tuesday" is ambiguous in English, so both candidate days are checked and the one matching the topic wins.
+- **Injectable clock.** `/api/chat` accepts `now` and `/api/import` accepts back-dated messages, which is how the UI's Dev clock, tests and eval build history. Both are off unless `ALLOW_CLOCK_OVERRIDE=true`.
 
 ## Why it is built this way
 
-- **Fast:** recall is pure SQLite (a few ms). The system prompt is static, so providers cache the shared prefix (Gemini implicit caching, OpenAI prefix caching). Per-turn data goes in the last message. Tokens are streamed, and the UI shows searches live. Searches for multiple items run in parallel. Repeat queries hit a 10-minute cache. Each search has an 8s timeout and fails soft. A step cap forces a written answer on the last step. **Fallback chain:** if a model fails (overloaded or out of quota, both seen on the Gemini free tier) before any text has streamed, the turn retries on the next model. Searches already done come from the cache. A per-attempt watchdog cancels a model that goes silent (the SDK timeout missed a call that never sent headers), and a failed model is skipped for 3 minutes (circuit breaker) so later turns don't wait on it.
-- **Right:** the current date and time are in every turn. The prompt pushes official sources, explicit "as of" dates, `[n]` citations, and saying "I could not verify" instead of guessing. For "is that still correct?" the old answer and the URLs it used are recalled, then re-checked live, and the reply is split into changed / unchanged / unverified. In the first eval run the model "confirmed" an old answer without searching, so the harness now detects verification questions ("still correct", "changed since") and forces a search on the first step instead of trusting the model to. Web content is treated as data (defence against indirect prompt injection). Failed turns (including a model error mid-answer) are not stored, so errors never become memories. Stop or disconnect aborts the model; the partial answer is stored marked cancelled and recalled as incomplete.
-- **Safe by default:** it listens on 127.0.0.1 only and rejects other Host headers (DNS rebinding). API POSTs must be same-origin JSON (CSRF). The page sends a strict CSP and renders only http(s)/mailto links. Text from memory and web pages is escaped before it goes inside the `<memory>` / `<result>` tags, so it cannot close them and inject instructions. Demo-only time travel (Dev clock, import) is off unless explicitly enabled. Provider errors reach the client only as a fixed code and a generic message; the detail, with keys redacted, stays in the server log. Bodies are size-capped (413), imports are capped, and chat/import are rate-limited per client (429 with Retry-After). Expired cache rows and old traces are pruned at startup and hourly; messages are kept unless `MESSAGE_RETENTION_DAYS` is set.
-- **Good to talk to:** answer first, short by default, a table when comparing, one clarifying question only when needed. It is honest when there is no record for a date, rather than inventing one.
+- **Fast:** recall is pure SQLite (a few ms). The system prompt is static so the provider can cache the prefix; per-turn data goes in the last message. Tokens stream and searches show live. Parallel searches, a 10-minute search cache, an 8s search timeout that fails soft. If a model fails before any text streams (overload and quota errors are common on the Gemini free tier), the turn moves to the next model in the chain; a watchdog cancels a silent model and a failed one is skipped for 3 minutes.
+- **Right:** the current time is in every turn. The prompt asks for official sources, "as of" dates, `[n]` citations, and "I could not verify" over guessing. For "is that still correct?" the old answer and its URLs are recalled and re-checked live (changed / unchanged / unverified). The first eval showed the model "confirming" without searching, so verification questions now force a search on step one. Failed turns are not stored, so errors never become memories; a stopped answer is stored as cancelled and recalled as incomplete.
+- **Safe by default:** loopback bind plus a Host check (DNS rebinding), same-origin JSON POSTs only (CSRF), strict CSP and http(s)-only links (XSS), memory and web text escaped inside their tags (prompt-injection breakout), generic error codes with keys redacted from logs, body size caps and per-client rate limits, and pruning of the cache and traces.
+- **Good to talk to:** answer first, short by default, tables for comparisons, one clarifying question only when needed, honest when a date has no record.
 
 ## Eval results
 
-`npm run eval` (6 challenge-style questions, 16 checks) on the Gemini free tier: **16/16 passed**, first token p50 10.1s / p95 12.1s. Searches take 0.7-4s; most of the wait is the model on free-tier capacity. Two bugs were found this way and fixed: an unverified "still correct" answer, and dropped `[3, 7]` citations.
+`npm run eval` (6 challenge-style questions, 16 checks) on the Gemini free tier: **16/16 passed**, first token p50 10.1s / p95 12.1s; most of the wait is free-tier model capacity. It caught two bugs, both fixed: an unverified "still correct" answer and dropped `[3, 7]` citations. Load test with mocked providers: 0% errors up to 1000 concurrent users.
 
 ## Considered and rejected
 
 | Option | Why not (for now) |
 |---|---|
-| Memory as a second tool (`search_memory`) | Breaks the one-tool rule and adds a model round trip per lookup |
-| Stuff the whole history into context | Cost and latency grow every day; models lose facts in the middle of long contexts |
-| Vector DB + embeddings for recall | Extra API call and latency on every turn. The test questions anchor on dates and named topics, where a date filter plus BM25 is more precise. It is the first upgrade below. |
-| LLM call to parse dates | 300-800 ms of extra latency for something deterministic code does in under 1 ms |
-| Scrape full pages after search | A second network hop per result; Tavily's cleaned content is usually enough |
-| LangChain / LangGraph | A loop with one tool does not need a graph; the AI SDK loop is easy to read and to explain |
+| Memory as a second tool | Breaks the one-tool rule; adds a model round trip per lookup |
+| Whole history in context | Cost and latency grow daily; models lose facts mid-context |
+| Vector DB for recall | Extra call per turn; the questions anchor on dates and named topics, where date filter + BM25 is more precise |
+| LLM call to parse dates | 300-800 ms for something code does in under 1 ms |
+| Scrape full pages after search | A second hop per result; Tavily's cleaned text is usually enough |
+| LangChain / LangGraph | One tool doesn't need a graph; the AI SDK loop is easier to read |
 
 ## With another week
 
-1. **Hybrid recall:** add embeddings next to BM25 and merge them with reciprocal rank fusion, for paraphrased references ("that database thing").
-2. **Structured claims:** extract (entity, attribute, value, date, source) from each answer, e.g. "Supabase Pro = $25/mo on 3 Nov". Then "what changed?" becomes a precise diff instead of comparing prose.
-3. **Model routing:** a small fast model for chit-chat and memory-only questions, a stronger one for multi-search research. A fast path that skips the tool schema for greetings.
-4. **Evals in CI:** grow `npm run eval` into a labelled set with an LLM judge, and track accuracy and p50/p95 latency for every prompt change.
-5. **Multi-user and auth**, a shared rate-limit store (e.g. Redis) for more than one instance, rolling summaries of very long conversations, and OpenTelemetry traces in place of the SQLite trace table.
+1. **Hybrid recall:** embeddings next to BM25, merged with reciprocal rank fusion, for paraphrases ("that database thing").
+2. **Structured claims:** store (entity, attribute, value, date, source) per answer, so "what changed?" is a precise diff, not prose comparison.
+3. **Model routing:** a small model for chit-chat and memory-only questions, a stronger one for research.
+4. **Evals in CI:** a labelled set with an LLM judge, tracking accuracy and p50/p95 per prompt change.
+5. **Multi-user:** auth, a shared rate-limit store for several instances, summaries of long conversations, OpenTelemetry traces.
