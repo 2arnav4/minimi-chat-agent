@@ -58,7 +58,12 @@ export const config = {
   port: Number(env('PORT') || 3000),
   tavilyKey: env('TAVILY_API_KEY'),
   defaultTimezone: env('DEFAULT_TIMEZONE') || 'Asia/Kolkata',
-  allowClockOverride: env('ALLOW_CLOCK_OVERRIDE') !== 'false',
+  /**
+   * Dev/demo only, OFF unless ALLOW_CLOCK_OVERRIDE=true. Lets a request set "now"
+   * (UI Dev clock) and enables /api/import, which writes back-dated history.
+   * Both exist only to fabricate a timeline for demos, so one flag gates both.
+   */
+  allowClockOverride: env('ALLOW_CLOCK_OVERRIDE') === 'true',
   dbPath: env('DB_PATH') || 'data/agent.db',
   /** Hard cap on agent loop steps (each step = one model call, possibly with parallel searches). */
   maxSteps: 6,

@@ -42,6 +42,8 @@ function stubTavily(status = 200) {
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'agent-it-'));
   resetDb(join(dir, 'test.db'));
+  // The demo flag is off by default; these tests exercise import and the Dev clock, so turn it on explicitly.
+  config.allowClockOverride = true;
 });
 afterEach(() => {
   fetchMock?.mock.restore();
@@ -152,6 +154,22 @@ test('the clock override sets the stored timestamp', async () => {
   const { events } = await chat(app, { message: 'hello', now: '2026-11-03T12:00:00+05:30' });
   const msgs = await (await app.request(`/api/conversations/${events[0].conversationId}/messages`)).json();
   assert.equal(msgs[0].createdAt, new Date('2026-11-03T12:00:00+05:30').getTime());
+});
+
+test('with ALLOW_CLOCK_OVERRIDE off, "now" is ignored, import is refused and health says so', async () => {
+  config.allowClockOverride = false;
+  const app = createApp({ model: model(text('ok')) });
+  const before = Date.now();
+  const { events } = await chat(app, { message: 'hello', now: '2020-01-01T00:00:00Z' });
+  const msgs = await (await app.request(`/api/conversations/${events[0].conversationId}/messages`)).json();
+  assert.ok(msgs[0].createdAt >= before, 'stored with the real time, not the requested one');
+  const imp = await app.request('/api/import', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ messages: [{ role: 'user', content: 'x', at: '2026-11-03T10:00:00Z' }] }),
+  });
+  assert.equal(imp.status, 403);
+  assert.equal((await (await app.request('/api/health')).json()).clockOverride, false);
 });
 
 test('search provider failure degrades gracefully: error surfaced, answer still produced', async () => {

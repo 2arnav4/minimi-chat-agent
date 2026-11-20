@@ -30,7 +30,7 @@ const isValidTz = (tz: string) => {
   }
 };
 
-/** The clock is injectable: a request may say what "now" is (dev clock, imports, evals). */
+/** The clock is injectable: a request may say what "now" is (dev clock), only when ALLOW_CLOCK_OVERRIDE=true. */
 function resolveNow(override?: string): Date {
   if (override && config.allowClockOverride) {
     const d = new Date(override);
@@ -115,7 +115,7 @@ export function createApp(deps: AppDeps = {}) {
   });
 
   app.post('/api/import', async (c) => {
-    if (!config.allowClockOverride) return c.json({ error: 'import disabled (ALLOW_CLOCK_OVERRIDE=false)' }, 403);
+    if (!config.allowClockOverride) return c.json({ error: 'import disabled (set ALLOW_CLOCK_OVERRIDE=true to enable)' }, 403);
     const parsed = ImportBody.safeParse(await c.req.json().catch(() => ({})));
     if (!parsed.success) return c.json({ error: parsed.error.issues[0]?.message ?? 'bad request' }, 400);
     const { messages, title } = parsed.data;

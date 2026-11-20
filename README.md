@@ -18,7 +18,7 @@ Keys (see `.env.example`):
 
 Gemini and Tavily both have free tiers, so the whole thing runs at zero cost.
 
-Requires Node 20+. The server listens on 127.0.0.1 only (set `HOST` to change it) and accepts only same-origin JSON POSTs.
+Requires Node 20+. The server listens on 127.0.0.1 only (set `HOST` to change it) and accepts only same-origin JSON POSTs. The Dev clock and `/api/import` are demo features, off unless `ALLOW_CLOCK_OVERRIDE=true` (which `.env.example` sets).
 
 ## Try the memory
 

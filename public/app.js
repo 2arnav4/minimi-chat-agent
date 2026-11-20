@@ -47,9 +47,26 @@ const toLocalInput = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d
 els.clock.value = toLocalInput(new Date());
 els.clockOn.checked = localStorage.getItem('clockOn') === '1';
 if (localStorage.getItem('clock')) els.clock.value = localStorage.getItem('clock');
-els.clockOn.onchange = () => localStorage.setItem('clockOn', els.clockOn.checked ? '1' : '0');
-els.clock.onchange = () => localStorage.setItem('clock', els.clock.value);
-const simulatedNow = () => (els.clockOn.checked && els.clock.value ? new Date(els.clock.value).toISOString() : undefined);
+let clockAllowed = true; // set from /api/health; the server ignores "now" when its flag is off
+const simulatedNow = () => (clockAllowed && els.clockOn.checked && els.clock.value ? new Date(els.clock.value).toISOString() : undefined);
+// Visible reminder while the Dev clock is on: messages are being stored with a fake time.
+function syncClockBanner() {
+  const on = Boolean(simulatedNow());
+  $('clock-banner').hidden = !on;
+  if (on) $('clock-banner-text').textContent = `Dev clock on: pretending it is ${fmt(new Date(els.clock.value).getTime())}. New messages are stored with this time.`;
+}
+els.clockOn.onchange = () => {
+  localStorage.setItem('clockOn', els.clockOn.checked ? '1' : '0');
+  syncClockBanner();
+};
+els.clock.onchange = () => {
+  localStorage.setItem('clock', els.clock.value);
+  syncClockBanner();
+};
+$('clock-off').onclick = () => {
+  els.clockOn.checked = false;
+  els.clockOn.onchange();
+};
 
 // ---- rendering ----
 function renderAnswer(text, sources = []) {
@@ -233,5 +250,8 @@ els.input.oninput = () => {
     els.banner.hidden = false;
     els.banner.textContent = `Setup needed: add ${h.missing.join(' and ')} to .env, then restart.`;
   }
+  clockAllowed = h.clockOverride === true;
+  $('dev').hidden = !clockAllowed;
+  syncClockBanner();
   loadConversations();
 })();
