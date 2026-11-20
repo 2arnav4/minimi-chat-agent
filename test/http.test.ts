@@ -373,3 +373,10 @@ test('a client that disconnects mid-answer stops the turn; history shows it as c
   assert.equal(msgs[1].status, 'cancelled');
   assert.equal(msgs[1].content, 'Half an ');
 });
+
+test('a new chat from the UI (conversationId: null, now: null) starts a conversation instead of a 400', async () => {
+  const app = createApp({ model: model(text('Hello there.')) });
+  const { events } = await chat(app, { conversationId: null, message: 'hi', timeZone: 'Asia/Kolkata', now: null });
+  assert.ok(events.find((e) => e.type === 'meta')?.conversationId, 'a conversation was created');
+  assert.ok(events.some((e) => e.type === 'done'));
+});

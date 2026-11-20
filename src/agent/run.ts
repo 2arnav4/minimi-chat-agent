@@ -237,7 +237,8 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
   const cancelled = (signal?.aborted ?? false) && !finished;
   // A model error mid-answer is a failed turn too: the partial text is not stored as if it were complete.
   const status: TurnStatus = cancelled ? 'cancelled' : answer.trim() && !failed ? 'answered' : 'failed';
-  const saved = status !== 'failed'
+  // Nothing is stored for a failed turn, or for a stop that came before any text arrived.
+  const saved = status !== 'failed' && answer.trim()
     ? addMessage(conv.id, 'assistant', answer, now.getTime() + Math.max(totalMs, 1), usedSources, cancelled ? 'cancelled' : 'answered')
     : null;
 

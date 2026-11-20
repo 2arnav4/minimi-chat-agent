@@ -78,10 +78,11 @@ export function createApp(deps: AppDeps = {}) {
   app.get('/api/traces', (c) => c.json(recentTraces().map(sanitizeTrace)));
 
   const ChatBody = z.object({
-    conversationId: z.string().optional(),
+    // The UI sends null for "no conversation yet" (JSON.stringify drops undefined but keeps null).
+    conversationId: z.string().nullish().transform((v) => v ?? undefined),
     message: z.string().trim().min(1).max(8000),
-    timeZone: z.string().optional(),
-    now: z.string().optional(),
+    timeZone: z.string().nullish().transform((v) => v ?? undefined),
+    now: z.string().nullish().transform((v) => v ?? undefined),
   });
 
   app.post('/api/chat', async (c) => {

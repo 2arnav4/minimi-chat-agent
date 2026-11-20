@@ -210,3 +210,21 @@ test('a model error after partial text is a failed turn: error shown, partial an
   const stored = getMessages(meta.conversationId);
   assert.deepEqual(stored.map((m) => m.role), ['user']);
 });
+
+test('a stop before any text arrives stores no empty assistant message', async () => {
+  const ctl = new AbortController();
+  const silent = new MockLanguageModelV4({
+    doStream: async ({ abortSignal }: any) => ({
+      stream: new ReadableStream({
+        start(controller) {
+          abortSignal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')));
+          setTimeout(() => ctl.abort(), 0);
+        },
+      }),
+    }),
+  } as any);
+  const events: AgentEvent[] = [];
+  await runTurn({ text: 'long question', now: new Date(), timeZone: 'Asia/Kolkata', signal: ctl.signal, emit: (e) => events.push(e), model: silent });
+  const meta = events.find((e) => e.type === 'meta') as Extract<AgentEvent, { type: 'meta' }>;
+  assert.deepEqual(getMessages(meta.conversationId).map((m) => m.role), ['user']);
+});
