@@ -141,3 +141,72 @@ test('redactSecrets, classifyModelError and sanitizeTrace', async () => {
   const old = { metrics: { fallbacks: ['google:a: 429 quota ?key=AIzaSyA1234567890abcdefghijklmnop', 'google:b: quota'] } };
   assert.deepEqual(sanitizeTrace(old).metrics.fallbacks, ['google:a: quota', 'google:b: quota']);
 });
+
+test('a stopped turn stores its partial text as cancelled, with no error event', async () => {
+  const { getMessages } = await import('../src/memory/store.js');
+  const ctl = new AbortController();
+  // Streams one word, then waits; the caller stops the turn after the first word arrives.
+  const slow = new MockLanguageModelV4({
+    doStream: async ({ abortSignal }: any) => ({
+      stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue({ type: 'text-start', id: 't' });
+          controller.enqueue({ type: 'text-delta', id: 't', delta: 'Partial ' });
+          abortSignal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')));
+        },
+      }),
+    }),
+  } as any);
+  const events: AgentEvent[] = [];
+  await runTurn({
+    text: 'tell me a long story',
+    now: new Date(),
+    timeZone: 'Asia/Kolkata',
+    signal: ctl.signal,
+    emit: (e) => {
+      events.push(e);
+      if (e.type === 'text') ctl.abort();
+    },
+    model: slow,
+  });
+  const done = events.find((e) => e.type === 'done') as Extract<AgentEvent, { type: 'done' }>;
+  assert.equal(done.status, 'cancelled');
+  assert.ok(!events.some((e) => e.type === 'error'), 'a user stop is not an error');
+  const meta = events.find((e) => e.type === 'meta') as Extract<AgentEvent, { type: 'meta' }>;
+  const stored = getMessages(meta.conversationId);
+  assert.equal(stored.length, 2);
+  assert.equal(stored[1].status, 'cancelled');
+  assert.equal(stored[1].content, 'Partial ');
+});
+
+test('a completed turn is stored as answered', async () => {
+  const model = new MockLanguageModelV4({
+    doStream: [{ stream: convertArrayToReadableStream([{ type: 'text-start', id: 't' }, { type: 'text-delta', id: 't', delta: 'Done.' }, { type: 'text-end', id: 't' }, finish('stop')]) }] as any,
+  });
+  const events: AgentEvent[] = [];
+  await runTurn({ text: 'hi', now: new Date(), timeZone: 'Asia/Kolkata', emit: (e) => events.push(e), model });
+  const done = events.find((e) => e.type === 'done') as Extract<AgentEvent, { type: 'done' }>;
+  assert.equal(done.status, 'answered');
+});
+
+test('a model error after partial text is a failed turn: error shown, partial answer not stored', async () => {
+  const broken = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue({ type: 'text-start', id: 't' });
+          controller.enqueue({ type: 'text-delta', id: 't', delta: 'Supabase Pro costs ' });
+          controller.error(new Error('503 service unavailable'));
+        },
+      }),
+    }),
+  } as any);
+  const warn = mock.method(console, 'warn', () => {});
+  const events: AgentEvent[] = [];
+  await runTurn({ text: 'postgres hosting prices', now: new Date(), timeZone: 'Asia/Kolkata', emit: (e) => events.push(e), model: broken });
+  warn.mock.restore();
+  assert.ok(events.some((e) => e.type === 'error'), 'the user sees an error');
+  const meta = events.find((e) => e.type === 'meta') as Extract<AgentEvent, { type: 'meta' }>;
+  const stored = getMessages(meta.conversationId);
+  assert.deepEqual(stored.map((m) => m.role), ['user']);
+});

@@ -15,9 +15,16 @@ export type AgentEvent =
   | { type: 'search_end'; id: string; query: string; results: number; ms: number; cached: boolean; error?: string }
   | { type: 'fallback'; from: string; to: string; reason: ErrorCode }
   | { type: 'text'; delta: string }
-  | { type: 'done'; messageId: number | null; sources: (Source & { n: number })[]; metrics: TurnMetrics }
+  | { type: 'done'; messageId: number | null; status: TurnStatus; sources: (Source & { n: number })[]; metrics: TurnMetrics }
   // message is a generic sentence safe to show; provider detail stays in the server log.
   | { type: 'error'; code: ErrorCode; message: string };
+
+/**
+ * How a turn ended. answered: full answer stored. cancelled: the client stopped it (Stop
+ * button or disconnect); any partial text is stored marked as cancelled. failed: every
+ * model failed; nothing is stored, so errors never become memories.
+ */
+export type TurnStatus = 'answered' | 'cancelled' | 'failed';
 
 /**
  * Circuit breaker: a model that just failed is skipped for a while, so every
@@ -70,7 +77,14 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
   emit({ type: 'meta', conversationId: conv.id, recall: { mode: mem.mode, matched: mem.matched, dates: mem.ranges.map((r) => r.label) } });
 
   const messages: ModelMessage[] = [
-    ...recent.map((m) => ({ role: m.role, content: m.content }) as ModelMessage),
+    // A stopped answer is labelled so the model does not build on it as if it were complete.
+    ...recent.map(
+      (m) =>
+        ({
+          role: m.role,
+          content: m.status === 'cancelled' ? `${m.content}\n\n[This answer was stopped by the user before it finished.]` : m.content,
+        }) as ModelMessage,
+    ),
     { role: 'user', content: buildTurnContent(text, now, timeZone, mem.block) },
   ];
 
@@ -107,6 +121,10 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
   let ttftMs: number | null = null;
   let steps = 0;
   let usage: { inputTokens?: number; outputTokens?: number } = {};
+  // Set when the model's own finish part arrives: an abort after that point (client closing
+  // the tab right at the end) must not mark a complete answer as cancelled.
+  let finished = false;
+  let failed = false; // set when the turn ends on a model error, even after partial text
 
   // Fallback chain: if a model fails (overloaded, quota, outage) before any answer text
   // reached the user, the same turn is retried on the next model. Searches already run
@@ -174,6 +192,7 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
         } else if (part.type === 'finish-step') {
           steps++;
         } else if (part.type === 'finish') {
+          finished = true;
           usage = { inputTokens: part.totalUsage?.inputTokens, outputTokens: part.totalUsage?.outputTokens };
         } else if (part.type === 'error') {
           throw part.error;
@@ -188,6 +207,8 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
       break;
     } catch (err) {
       clearTimeout(watchdog);
+      // The user stopped the turn: not a model failure, so no error event and no circuit-breaker hit.
+      if (signal?.aborted) break;
       const code = classifyModelError(err);
       const canFallBack = !answer && i < chain.length - 1 && !signal?.aborted;
       if (!signal?.aborted) failedAt.set(chain[i].name, Date.now());
@@ -197,6 +218,7 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
         continue;
       }
       console.warn(`[${chain[i].name}] turn failed (${code}): ${logDetail(err)}`);
+      failed = true;
       emit({ type: 'error', code, message: publicMessage(code) });
       break;
     }
@@ -210,7 +232,14 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
   const usedSources = sources.filter((s) => cited.has(s.n));
   const totalMs = Math.round(performance.now() - t0);
   // A failed turn with no answer is not stored as an assistant message, so errors never become "memories".
-  const saved = answer.trim() ? addMessage(conv.id, 'assistant', answer, now.getTime() + Math.max(totalMs, 1), usedSources) : null;
+  // A stopped turn keeps its partial text, marked cancelled, so history shows what was said without
+  // presenting it as a finished answer.
+  const cancelled = (signal?.aborted ?? false) && !finished;
+  // A model error mid-answer is a failed turn too: the partial text is not stored as if it were complete.
+  const status: TurnStatus = cancelled ? 'cancelled' : answer.trim() && !failed ? 'answered' : 'failed';
+  const saved = status !== 'failed'
+    ? addMessage(conv.id, 'assistant', answer, now.getTime() + Math.max(totalMs, 1), usedSources, cancelled ? 'cancelled' : 'answered')
+    : null;
 
   const metrics: TurnMetrics = {
     model: usedModel,
@@ -224,6 +253,6 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
     forcedSearch: mustVerify,
     ...usage,
   };
-  saveTrace(conv.id, now.getTime(), { question: text, recall: { mode: mem.mode, matched: mem.matched, dates: mem.ranges.map((r) => r.label) }, metrics });
-  emit({ type: 'done', messageId: saved?.id ?? null, sources: usedSources, metrics });
+  saveTrace(conv.id, now.getTime(), { question: text, status, recall: { mode: mem.mode, matched: mem.matched, dates: mem.ranges.map((r) => r.label) }, metrics });
+  emit({ type: 'done', messageId: saved?.id ?? null, status, sources: usedSources, metrics });
 }

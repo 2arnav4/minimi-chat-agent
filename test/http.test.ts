@@ -329,3 +329,47 @@ test('rate limit returns 429 with Retry-After, and 0 turns it off', async () => 
     config.limits.importPerMinute = saved;
   }
 });
+
+test('a client that disconnects mid-answer stops the turn; history shows it as cancelled', async () => {
+  let aborted = false;
+  const slow = new MockLanguageModelV4({
+    doStream: async ({ abortSignal }: any) => ({
+      stream: new ReadableStream({
+        start(controller) {
+          controller.enqueue({ type: 'text-start', id: 't' });
+          controller.enqueue({ type: 'text-delta', id: 't', delta: 'Half an ' });
+          abortSignal?.addEventListener('abort', () => {
+            aborted = true;
+            controller.error(new DOMException('aborted', 'AbortError'));
+          });
+        },
+      }),
+    }),
+  } as any);
+  const app = createApp({ model: slow });
+  const ctl = new AbortController();
+  const res = await app.request('/api/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ message: 'write me an essay' }),
+    signal: ctl.signal,
+  });
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let raw = '';
+  while (!raw.includes('Half an')) raw += decoder.decode((await reader.read()).value);
+  const metaLine = raw.split('\n').find((l) => l.startsWith('data:') && l.includes('"meta"'))!;
+  const conversationId = JSON.parse(metaLine.slice(5)).conversationId;
+  ctl.abort();
+  await reader.cancel().catch(() => {});
+  // The turn finishes asynchronously after the abort; wait for the stored message.
+  let msgs: any[] = [];
+  for (let i = 0; i < 50 && msgs.length < 2; i++) {
+    await new Promise((r) => setTimeout(r, 20));
+    msgs = await (await app.request(`/api/conversations/${conversationId}/messages`)).json();
+  }
+  assert.ok(aborted, 'the model call was aborted');
+  assert.equal(msgs.length, 2);
+  assert.equal(msgs[1].status, 'cancelled');
+  assert.equal(msgs[1].content, 'Half an ');
+});

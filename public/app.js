@@ -39,6 +39,9 @@ $('tz').textContent = `Your timezone: ${timeZone}`;
 
 let conversationId = null;
 let busy = false;
+// Turn state: idle -> streaming -> (answered | stopped | error) -> idle. While streaming,
+// the Send button becomes Stop and aborts this controller.
+let inflight = null;
 
 const fmt = (ms) => new Date(ms).toLocaleString(undefined, { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 
@@ -88,7 +91,15 @@ function renderAnswer(text, sources = []) {
   return html;
 }
 
-function addMessage(role, text, at, sources = []) {
+const markStopped = (div) => {
+  if (div.querySelector('.stopped')) return;
+  const tag = document.createElement('div');
+  tag.className = 'stopped';
+  tag.textContent = 'Stopped before finishing';
+  div.appendChild(tag);
+};
+
+function addMessage(role, text, at, sources = [], status = 'answered') {
   els.empty.hidden = true;
   const div = document.createElement('div');
   div.className = `msg ${role}`;
@@ -97,6 +108,7 @@ function addMessage(role, text, at, sources = []) {
   if (role === 'user') body.textContent = text;
   else body.innerHTML = renderAnswer(text, sources.map((s, i) => ({ n: s.n ?? i + 1, ...s })));
   if (role === 'assistant' && sources.length) renderSources(div, sources.map((s, i) => ({ n: s.n ?? i + 1, ...s })));
+  if (role === 'assistant' && status === 'cancelled') markStopped(div);
   els.msgs.appendChild(div);
   els.msgs.scrollTop = els.msgs.scrollHeight;
   return div;
@@ -126,7 +138,7 @@ async function openConversation(id) {
   const msgs = res && res.ok ? await res.json().catch(() => []) : []; // a deleted/unknown id returns 404 {error}
   if (!Array.isArray(msgs) || !msgs.length) els.empty.hidden = false;
   if (!Array.isArray(msgs)) return;
-  msgs.forEach((m) => addMessage(m.role, m.content, m.createdAt, m.sources));
+  msgs.forEach((m) => addMessage(m.role, m.content, m.createdAt, m.sources, m.status));
   loadConversations();
 }
 
@@ -141,7 +153,9 @@ $('new-chat').onclick = () => {
 // ---- streaming ----
 async function send(text) {
   busy = true;
-  els.send.disabled = true;
+  inflight = new AbortController();
+  els.send.textContent = 'Stop';
+  els.send.classList.add('stop');
   const now = simulatedNow();
   addMessage('user', text, now ? new Date(now).getTime() : Date.now());
   const div = addMessage('assistant', '', null);
@@ -156,6 +170,7 @@ async function send(text) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ conversationId, message: text, timeZone, now }),
+      signal: inflight.signal,
     });
     if (!res.ok || !res.body) throw new Error((await res.json().catch(() => ({}))).error || `HTTP ${res.status}`);
 
@@ -228,18 +243,31 @@ async function send(text) {
       }
     }
   } catch (err) {
-    body.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    if (err.name === 'AbortError') {
+      // The server sees the disconnect, stops the model and stores the partial text as cancelled.
+      cancelAnimationFrame(frame);
+      if (answer) body.innerHTML = renderAnswer(answer);
+      markStopped(div);
+    } else {
+      body.innerHTML = `<p class="error">${esc(err.message)}</p>`;
+    }
   } finally {
     busy = false;
-    els.send.disabled = false;
+    inflight = null;
+    els.send.textContent = 'Send';
+    els.send.classList.remove('stop');
     loadConversations();
   }
 }
 
 els.form.onsubmit = (ev) => {
   ev.preventDefault();
+  if (busy) {
+    inflight?.abort();
+    return;
+  }
   const text = els.input.value.trim();
-  if (!text || busy) return;
+  if (!text) return;
   els.input.value = '';
   els.input.style.height = 'auto';
   send(text);
@@ -247,7 +275,8 @@ els.form.onsubmit = (ev) => {
 els.input.onkeydown = (ev) => {
   if (ev.key === 'Enter' && !ev.shiftKey) {
     ev.preventDefault();
-    els.form.requestSubmit();
+    // Enter only sends; stopping takes a deliberate click on Stop.
+    if (!busy) els.form.requestSubmit();
   }
 };
 els.input.oninput = () => {

@@ -211,3 +211,32 @@ test('message retention deletes old messages, their search index entries and emp
   assert.equal(ftsCount, 1);
   assert.deepEqual(listConversations().map((c) => c.title), ['recent']);
 });
+
+test('a stopped answer is labelled incomplete in recalled memory', () => {
+  resetDb();
+  const c = createConversation('postgres', at('2026-11-09T06:00:00Z'));
+  addMessage(c.id, 'user', 'Compare Postgres hosting prices', at('2026-11-09T06:00:00Z'));
+  addMessage(c.id, 'assistant', 'Supabase Pro is', at('2026-11-09T06:00:05Z'), [], 'cancelled');
+  const mem = recall('What did I ask you on Monday?', NOW, TZ);
+  assert.match(mem.block ?? '', /Assistant \(stopped by the user before finishing, incomplete\): Supabase Pro is/);
+});
+
+test('a database from before turn status gets the column, old answers read as answered', async () => {
+  const Database = (await import('better-sqlite3')).default;
+  const { mkdtempSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = mkdtempSync(join(tmpdir(), 'mig-'));
+  const path = join(dir, 'old.db');
+  const old = new Database(path);
+  old.exec(`CREATE TABLE conversations (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, conversation_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL, sources TEXT NOT NULL DEFAULT '[]');
+    INSERT INTO conversations VALUES ('c1', 't', 1, 1);
+    INSERT INTO messages (conversation_id, role, content, created_at) VALUES ('c1', 'assistant', 'old answer', 1);`);
+  old.close();
+  resetDb(path);
+  const { getMessages } = await import('../src/memory/store.js');
+  assert.equal(getMessages('c1')[0].status, 'answered');
+  resetDb();
+  rmSync(dir, { recursive: true, force: true });
+});

@@ -12,6 +12,11 @@ import { config } from '../config.js';
  */
 
 export type Role = 'user' | 'assistant';
+/**
+ * Outcome of an assistant turn. 'cancelled' = the user stopped it (Stop button or
+ * closed the tab) and the text is a partial answer. Failed turns are not stored at all.
+ */
+export type MessageStatus = 'answered' | 'cancelled';
 
 export interface Source {
   title: string;
@@ -27,6 +32,7 @@ export interface StoredMessage {
   content: string;
   createdAt: number;
   sources: Source[];
+  status: MessageStatus;
 }
 
 export interface Conversation {
@@ -80,6 +86,12 @@ export function getDb(path = config.dbPath): Database.Database {
       data TEXT NOT NULL
     );
   `);
+  // Migration for databases created before turn status existed: add the column with a
+  // default, so every old row reads as a complete answer. ALTER TABLE ADD COLUMN is O(1) in SQLite.
+  const cols = db.prepare('PRAGMA table_info(messages)').all() as { name: string }[];
+  if (!cols.some((c) => c.name === 'status')) {
+    db.exec("ALTER TABLE messages ADD COLUMN status TEXT NOT NULL DEFAULT 'answered'");
+  }
   return db;
 }
 
@@ -90,7 +102,7 @@ export function resetDb(path = ':memory:') {
   getDb(path);
 }
 
-type Row = { id: number; conversation_id: string; role: Role; content: string; created_at: number; sources: string };
+type Row = { id: number; conversation_id: string; role: Role; content: string; created_at: number; sources: string; status?: MessageStatus };
 const toMessage = (r: Row): StoredMessage => ({
   id: r.id,
   conversationId: r.conversation_id,
@@ -98,6 +110,7 @@ const toMessage = (r: Row): StoredMessage => ({
   content: r.content,
   createdAt: r.created_at,
   sources: JSON.parse(r.sources),
+  status: r.status ?? 'answered',
 });
 
 export function createConversation(title: string, now: number, id: string = randomUUID()): Conversation {
@@ -121,13 +134,20 @@ export function listConversations(): Conversation[] {
   }));
 }
 
-export function addMessage(conversationId: string, role: Role, content: string, createdAt: number, sources: Source[] = []): StoredMessage {
+export function addMessage(
+  conversationId: string,
+  role: Role,
+  content: string,
+  createdAt: number,
+  sources: Source[] = [],
+  status: MessageStatus = 'answered',
+): StoredMessage {
   const d = getDb();
   const info = d
-    .prepare('INSERT INTO messages (conversation_id, role, content, created_at, sources) VALUES (?, ?, ?, ?, ?)')
-    .run(conversationId, role, content, createdAt, JSON.stringify(sources));
+    .prepare('INSERT INTO messages (conversation_id, role, content, created_at, sources, status) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(conversationId, role, content, createdAt, JSON.stringify(sources), status);
   d.prepare('UPDATE conversations SET updated_at = MAX(updated_at, ?) WHERE id = ?').run(createdAt, conversationId);
-  return { id: Number(info.lastInsertRowid), conversationId, role, content, createdAt, sources };
+  return { id: Number(info.lastInsertRowid), conversationId, role, content, createdAt, sources, status };
 }
 
 export function getMessages(conversationId: string, limit = 1000): StoredMessage[] {

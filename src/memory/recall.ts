@@ -58,7 +58,10 @@ function render(messages: StoredMessage[], timeZone: string): string {
     .map((m) => {
       const body = m.content.length > MAX_CHARS_PER_MESSAGE ? m.content.slice(0, MAX_CHARS_PER_MESSAGE) + ' [...]' : m.content;
       const src = m.sources.length ? `\n  Sources used then: ${m.sources.slice(0, 6).map((s) => s.url).join(', ')}` : '';
-      return `[${formatStamp(m.createdAt, timeZone)}] ${m.role === 'user' ? 'User' : 'Assistant'}: ${body}${src}`;
+      // A stopped answer stays visible (it shows what was said, and keeps the question paired
+      // with a reply) but is labelled so the model never treats it as a complete answer.
+      const who = m.role === 'user' ? 'User' : m.status === 'cancelled' ? 'Assistant (stopped by the user before finishing, incomplete)' : 'Assistant';
+      return `[${formatStamp(m.createdAt, timeZone)}] ${who}: ${body}${src}`;
     })
     .join('\n');
 }

@@ -49,3 +49,5 @@ main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
 #send:disabled { opacity: 0.5; cursor: default; }
 @media (max-width: 720px) { aside { display: none; } }
 #banner .banner-retry { margin-left: 8px; font-size: 13px; padding: 2px 8px; cursor: pointer; }
+#send.stop { background: var(--muted); }
+.msg .stopped { font-size: 12px; color: var(--muted); margin-top: 4px; font-style: italic; }
