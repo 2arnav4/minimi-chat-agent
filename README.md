@@ -57,4 +57,5 @@ src/memory/recall.ts   pick the past messages relevant to this message
 src/memory/store.ts    SQLite: messages (+FTS5), search cache, traces
 src/search/webSearch.ts  the one tool (Tavily), cache, timeout, untrusted-content wrapping
 public/                plain HTML/JS chat UI
+public/cite.js         citation linking, shared by the UI and the server
 ```

@@ -1,4 +1,5 @@
 import { marked } from '/vendor/marked.js';
+import { linkCitations } from '/cite.js';
 
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 // Never render raw HTML coming from the model (it may echo web content).
@@ -48,7 +49,11 @@ els.clock.value = toLocalInput(new Date());
 els.clockOn.checked = localStorage.getItem('clockOn') === '1';
 if (localStorage.getItem('clock')) els.clock.value = localStorage.getItem('clock');
 let clockAllowed = true; // set from /api/health; the server ignores "now" when its flag is off
-const simulatedNow = () => (clockAllowed && els.clockOn.checked && els.clock.value ? new Date(els.clock.value).toISOString() : undefined);
+const simulatedNow = () => {
+  if (!clockAllowed || !els.clockOn.checked || !els.clock.value) return undefined;
+  const d = new Date(els.clock.value);
+  return Number.isNaN(d.getTime()) ? undefined : d.toISOString(); // an invalid value must not throw before send() can reset busy
+};
 // Visible reminder while the Dev clock is on: messages are being stored with a fake time.
 function syncClockBanner() {
   const on = Boolean(simulatedNow());
@@ -73,17 +78,12 @@ function renderAnswer(text, sources = []) {
   const byN = new Map(sources.map((s) => [s.n, s]));
   let html = marked.parse(text || '');
   if (byN.size) {
-    html = html.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (m, group) =>
-      group
-        .split(',')
-        .map((x) => {
-          const n = Number(x.trim());
-          const s = byN.get(n);
-          const href = s && safeHref(s.url);
-          return href ? `<a class="cite" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(s.title)}">[${n}]</a>` : `[${n}]`;
-        })
-        .join(''),
-    );
+    // Only in text, never inside tags, links or code (see cite.js).
+    html = linkCitations(html, (n) => {
+      const s = byN.get(n);
+      const href = s && safeHref(s.url);
+      return href ? `<a class="cite" href="${esc(href)}" target="_blank" rel="noopener" title="${esc(s.title ?? '')}">[${n}]</a>` : null;
+    });
   }
   return html;
 }
@@ -110,7 +110,9 @@ function renderSources(div, sources, numbered = true) {
 }
 
 async function loadConversations() {
-  const list = await (await fetch('/api/conversations')).json();
+  const res = await fetch('/api/conversations').catch(() => null);
+  const list = res && res.ok ? await res.json().catch(() => []) : [];
+  if (!Array.isArray(list)) return;
   els.list.innerHTML = list
     .map((c) => `<li data-id="${esc(c.id)}" class="${c.id === conversationId ? 'active' : ''}">${esc(c.title)}<small>${esc(fmt(c.updatedAt))}</small></li>`)
     .join('');
@@ -120,8 +122,10 @@ async function loadConversations() {
 async function openConversation(id) {
   conversationId = id;
   els.msgs.querySelectorAll('.msg').forEach((m) => m.remove());
-  const msgs = await (await fetch(`/api/conversations/${id}/messages`)).json();
-  if (!msgs.length) els.empty.hidden = false;
+  const res = await fetch(`/api/conversations/${encodeURIComponent(id)}/messages`).catch(() => null);
+  const msgs = res && res.ok ? await res.json().catch(() => []) : []; // a deleted/unknown id returns 404 {error}
+  if (!Array.isArray(msgs) || !msgs.length) els.empty.hidden = false;
+  if (!Array.isArray(msgs)) return;
   msgs.forEach((m) => addMessage(m.role, m.content, m.createdAt, m.sources));
   loadConversations();
 }
@@ -167,12 +171,18 @@ async function send(text) {
         buf = buf.slice(idx + 2);
         const data = chunk.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).join('\n');
         if (!data) continue;
-        const e = JSON.parse(data);
+        let e;
+        try {
+          e = JSON.parse(data);
+        } catch {
+          continue; // skip a malformed event instead of aborting the whole answer
+        }
+        if (!e || typeof e !== 'object') continue;
         if (e.type === 'meta') {
           conversationId = e.conversationId;
-          if (e.recall.mode !== 'none') {
+          if (e.recall && e.recall.mode !== 'none') {
             const row = document.createElement('div');
-            row.textContent = e.recall.dates.length
+            row.textContent = e.recall.dates?.length
               ? `Checked history for ${e.recall.dates.join(', ')}: ${e.recall.matched} message(s) found`
               : `Checked earlier conversations: ${e.recall.matched} message(s) found`;
             activity.appendChild(row);
@@ -194,7 +204,7 @@ async function send(text) {
           row.textContent = `${e.from} is unavailable, switching to ${e.to}`;
           activity.appendChild(row);
         } else if (e.type === 'text') {
-          answer += e.delta;
+          answer += e.delta ?? '';
           cancelAnimationFrame(frame);
           frame = requestAnimationFrame(() => {
             body.innerHTML = renderAnswer(answer);
@@ -202,12 +212,13 @@ async function send(text) {
           });
         } else if (e.type === 'done') {
           cancelAnimationFrame(frame);
-          body.innerHTML = renderAnswer(answer, e.sources);
-          if (e.sources.length) renderSources(div, e.sources);
+          const sources = Array.isArray(e.sources) ? e.sources : [];
+          body.innerHTML = renderAnswer(answer, sources);
+          if (sources.length) renderSources(div, sources);
           const m = e.metrics;
-          div.querySelector('.metrics').textContent =
+          if (m) div.querySelector('.metrics').textContent =
             `${m.ttftMs != null ? `first token ${(m.ttftMs / 1000).toFixed(1)}s, ` : ''}total ${(m.totalMs / 1000).toFixed(1)}s, ${m.searches} search(es), ${m.model}`;
-          div.querySelector('.stamp').textContent = fmt(now ? new Date(now).getTime() + m.totalMs : Date.now());
+          div.querySelector('.stamp').textContent = fmt(now ? new Date(now).getTime() + (m?.totalMs ?? 0) : Date.now());
         } else if (e.type === 'error') {
           const p = document.createElement('div');
           p.className = 'error';
@@ -244,14 +255,41 @@ els.input.oninput = () => {
   els.input.style.height = `${els.input.scrollHeight}px`;
 };
 
-(async () => {
-  const h = await (await fetch('/api/health')).json();
-  if (!h.ok) {
-    els.banner.hidden = false;
-    els.banner.textContent = `Setup needed: add ${h.missing.join(' and ')} to .env, then restart.`;
+// ---- setup banner: checking -> ok (hidden) | missing keys | server unreachable ----
+// Re-checked on "Check again" and whenever the tab regains focus, so it clears
+// after the keys are added and the server restarted, without a page reload.
+async function checkHealth() {
+  let h = null;
+  try {
+    const res = await fetch('/api/health');
+    h = res.ok ? await res.json() : null;
+  } catch {}
+  if (h) {
+    clockAllowed = h.clockOverride === true;
+    $('dev').hidden = !clockAllowed;
+    syncClockBanner();
   }
-  clockAllowed = h.clockOverride === true;
-  $('dev').hidden = !clockAllowed;
-  syncClockBanner();
+  if (h && h.ok) {
+    els.banner.hidden = true;
+    return true;
+  }
+  els.banner.hidden = false;
+  els.banner.textContent = h
+    ? `Setup needed: add ${(h.missing ?? []).join(' and ')} to .env, then restart.`
+    : 'The server is not reachable. Start it with npm run dev.';
+  const again = document.createElement('button');
+  again.type = 'button';
+  again.className = 'banner-retry';
+  again.textContent = 'Check again';
+  again.onclick = () => checkHealth().then((ok) => ok && loadConversations());
+  els.banner.append(' ', again);
+  return false;
+}
+window.addEventListener('focus', () => {
+  if (!els.banner.hidden) checkHealth().then((ok) => ok && loadConversations());
+});
+
+(async () => {
+  await checkHealth();
   loadConversations();
 })();

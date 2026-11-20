@@ -5,6 +5,7 @@ import { addMessage, createConversation, getConversation, getMessages, saveTrace
 import { recall } from '../memory/recall.js';
 import { webSearch, formatForModel } from '../search/webSearch.js';
 import { SYSTEM_PROMPT, buildTurnContent } from './prompt.js';
+import { citedNumbers } from '../../public/cite.js';
 
 /** Events streamed to the client (and recorded in the trace). */
 export type AgentEvent =
@@ -201,7 +202,8 @@ export async function runTurn({ conversationId, text, now, timeZone, signal, emi
   // 4. Persist the answer with the sources it actually cited, so a later
   //    "is that still correct?" can see exactly what was claimed and from where.
   // Accepts [3] and grouped forms like [3, 7].
-  const cited = new Set([...answer.matchAll(/\[(\d+(?:\s*,\s*\d+)*)\]/g)].flatMap((m) => m[1].split(',').map((n) => Number(n.trim()))));
+  // Same rule as the UI: "[n]" inside code or a link target is not a citation.
+  const cited = citedNumbers(answer);
   const usedSources = sources.filter((s) => cited.has(s.n));
   const totalMs = Math.round(performance.now() - t0);
   // A failed turn with no answer is not stored as an assistant message, so errors never become "memories".

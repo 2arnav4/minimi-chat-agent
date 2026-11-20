@@ -64,7 +64,7 @@ async function chat(app: ReturnType<typeof createApp>, body: object) {
 
 test('GET / and the static assets are served', async () => {
   const app = createApp({ model: model(text('x')) });
-  for (const [path, type] of [['/', 'text/html'], ['/app.js', 'javascript'], ['/styles.css', 'text/css'], ['/vendor/marked.js', 'javascript']]) {
+  for (const [path, type] of [['/', 'text/html'], ['/app.js', 'javascript'], ['/cite.js', 'javascript'], ['/styles.css', 'text/css'], ['/vendor/marked.js', 'javascript']]) {
     const res = await app.request(path);
     assert.equal(res.status, 200, path);
     assert.match(res.headers.get('content-type') ?? '', new RegExp(type));

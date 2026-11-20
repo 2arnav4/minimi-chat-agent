@@ -53,6 +53,7 @@ export function createApp(deps: AppDeps = {}) {
   const page = (file: string, type: string) => (c: any) => c.body(readFileSync(new URL(`../public/${file}`, import.meta.url)), 200, { 'content-type': type });
   app.get('/', page('index.html', 'text/html; charset=utf-8'));
   app.get('/app.js', page('app.js', 'text/javascript; charset=utf-8'));
+  app.get('/cite.js', page('cite.js', 'text/javascript; charset=utf-8'));
   app.get('/styles.css', page('styles.css', 'text/css; charset=utf-8'));
   app.get('/vendor/marked.js', (c) => c.body(readFileSync(require.resolve('marked')), 200, { 'content-type': 'text/javascript' }));
 
