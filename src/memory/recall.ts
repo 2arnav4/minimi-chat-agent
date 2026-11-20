@@ -20,7 +20,7 @@ export interface Recall {
 
 /** Phrases that signal the user is referring to an earlier exchange. */
 const MEMORY_CUE =
-  /\b(you (said|told|suggested|recommended|answered|mentioned|gave)|i (asked|told|said|mentioned)|we (discussed|talked|shortlisted|decided|compared|looked at|picked|chose)|earlier|last time|previously|before|remember|recall|still (correct|true|right|valid)|since then|changed since|shortlist)/i;
+  /\b(you (said|told|suggested|recommended|answered|mentioned|gave)|i (ask|asked|told|said|mentioned)|we (discuss|discussed|talk|talked|shortlist|shortlisted|decide|decided|compare|compared|look at|looked at|pick|picked|choose|chose)|our (chat|conversation)|earlier|last time|previously|before|remember|recall|still (correct|true|right|valid)|since then|changed since|shortlist)/i;
 
 const STOP = new Set(
   `a an and are as at be been but by can could did do does for from had has have how i if in into is it its me my of on or our so than that the their them then there these they this to us was we were what when where which who why will with would you your

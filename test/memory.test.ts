@@ -240,3 +240,15 @@ test('a database from before turn status gets the column, old answers read as an
   resetDb();
   rmSync(dir, { recursive: true, force: true });
 });
+
+test('present-tense phrasing ("what did we talk about regarding X") still triggers topic recall', () => {
+  resetDb();
+  const c = createConversation('monitor', Date.parse('2026-11-03T05:30:00Z'));
+  addMessage(c.id, 'user', 'What is a good 27 inch 4K monitor for coding?', Date.parse('2026-11-03T05:30:00Z'));
+  addMessage(c.id, 'assistant', 'The Dell S2722QC and the LG 27UP600.', Date.parse('2026-11-03T05:30:09Z'));
+  for (const q of ['What did we talk about regarding monitors?', 'What did I ask about monitors?', 'In our chat about monitors, what did you pick?']) {
+    const mem = recall(q, NOW, TZ);
+    assert.equal(mem.mode, 'topic', q);
+    assert.match(mem.block ?? '', /Dell S2722QC/, q);
+  }
+});
